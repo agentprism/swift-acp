@@ -128,6 +128,49 @@ final class ACPModelTests: XCTestCase {
         XCTAssertEqual(json["version"] as? String, "1.0.0")
     }
 
+    func testInitializeProtocolVersionDecodingIsLenient() throws {
+        let requestJson = """
+        {
+            "protocolVersion": "2025-03-26",
+            "clientCapabilities": {
+                "fs": {"readTextFile": true, "writeTextFile": true},
+                "terminal": true
+            }
+        }
+        """
+        let responseJson = """
+        {
+            "protocolVersion": "1",
+            "agentCapabilities": {}
+        }
+        """
+
+        let decoder = JSONDecoder()
+        let request = try decoder.decode(InitializeRequest.self, from: requestJson.data(using: .utf8)!)
+        let response = try decoder.decode(InitializeResponse.self, from: responseJson.data(using: .utf8)!)
+
+        XCTAssertEqual(request.protocolVersion, 1)
+        XCTAssertEqual(response.protocolVersion, 1)
+    }
+
+    func testSessionInfoAdditionalDirectoriesDecoding() throws {
+        let json = """
+        {
+            "sessionId": "session-123",
+            "cwd": "/tmp/project",
+            "additionalDirectories": ["/tmp/shared"],
+            "title": "Review ACP"
+        }
+        """
+
+        let info = try JSONDecoder().decode(SessionInfo.self, from: json.data(using: .utf8)!)
+
+        XCTAssertEqual(info.sessionId.value, "session-123")
+        XCTAssertEqual(info.cwd, "/tmp/project")
+        XCTAssertEqual(info.additionalDirectories, ["/tmp/shared"])
+        XCTAssertEqual(info.title, "Review ACP")
+    }
+
     func testCloseSessionRequestEncoding() throws {
         let request = CloseSessionRequest(sessionId: SessionId("session-123"))
         let encoder = JSONEncoder()
@@ -135,6 +178,21 @@ final class ACPModelTests: XCTestCase {
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
 
         XCTAssertEqual(json["sessionId"] as? String, "session-123")
+    }
+
+    func testNewSessionRequestEncodingIncludesAdditionalDirectories() throws {
+        let request = NewSessionRequest(
+            cwd: "/tmp/project",
+            additionalDirectories: ["/tmp/shared"],
+            mcpServers: []
+        )
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(request)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        XCTAssertEqual(json["cwd"] as? String, "/tmp/project")
+        XCTAssertEqual(json["additionalDirectories"] as? [String], ["/tmp/shared"])
+        XCTAssertEqual((json["mcpServers"] as? [Any])?.count, 0)
     }
 
     func testCloseSessionResponseEncoding() throws {
@@ -150,6 +208,7 @@ final class ACPModelTests: XCTestCase {
         let request = LoadSessionRequest(
             sessionId: SessionId("session-123"),
             cwd: "/tmp/project",
+            additionalDirectories: ["/tmp/shared"],
             mcpServers: []
         )
         let encoder = JSONEncoder()
@@ -158,7 +217,75 @@ final class ACPModelTests: XCTestCase {
 
         XCTAssertEqual(json["sessionId"] as? String, "session-123")
         XCTAssertEqual(json["cwd"] as? String, "/tmp/project")
+        XCTAssertEqual(json["additionalDirectories"] as? [String], ["/tmp/shared"])
         XCTAssertEqual((json["mcpServers"] as? [Any])?.count, 0)
+    }
+
+    func testResumeSessionRequestDecodingDefaultsMissingMCPServers() throws {
+        let json = """
+        {
+            "sessionId": "session-123",
+            "cwd": "/tmp/project",
+            "additionalDirectories": ["/tmp/shared"]
+        }
+        """
+
+        let request = try JSONDecoder().decode(ResumeSessionRequest.self, from: json.data(using: .utf8)!)
+
+        XCTAssertEqual(request.sessionId.value, "session-123")
+        XCTAssertEqual(request.cwd, "/tmp/project")
+        XCTAssertEqual(request.additionalDirectories, ["/tmp/shared"])
+        XCTAssertTrue(request.mcpServers.isEmpty)
+    }
+
+    func testResumeSessionResponseEncodingOmitsEmptyStateByDefault() throws {
+        let response = ResumeSessionResponse()
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(response)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        XCTAssertTrue(json.isEmpty)
+    }
+
+    func testDeleteSessionRequestAndResponseEncoding() throws {
+        let request = DeleteSessionRequest(sessionId: SessionId("session-123"))
+        let response = DeleteSessionResponse()
+        let encoder = JSONEncoder()
+
+        let requestJson = try JSONSerialization.jsonObject(with: encoder.encode(request)) as! [String: Any]
+        let responseJson = try JSONSerialization.jsonObject(with: encoder.encode(response)) as! [String: Any]
+
+        XCTAssertEqual(requestJson["sessionId"] as? String, "session-123")
+        XCTAssertTrue(responseJson.isEmpty)
+    }
+
+    func testLogoutRequestAndResponseEncoding() throws {
+        let encoder = JSONEncoder()
+        let requestJson = try JSONSerialization.jsonObject(with: encoder.encode(LogoutRequest())) as! [String: Any]
+        let responseJson = try JSONSerialization.jsonObject(with: encoder.encode(LogoutResponse())) as! [String: Any]
+
+        XCTAssertTrue(requestJson.isEmpty)
+        XCTAssertTrue(responseJson.isEmpty)
+    }
+
+    func testAgentCapabilitiesDecodeStableAuthAndSessionFeatures() throws {
+        let json = """
+        {
+            "auth": {"logout": {}},
+            "sessionCapabilities": {
+                "additionalDirectories": {},
+                "delete": {},
+                "resume": {}
+            }
+        }
+        """
+
+        let capabilities = try JSONDecoder().decode(AgentCapabilities.self, from: json.data(using: .utf8)!)
+
+        XCTAssertNotNil(capabilities.auth?.logout)
+        XCTAssertNotNil(capabilities.sessionCapabilities?.additionalDirectories)
+        XCTAssertNotNil(capabilities.sessionCapabilities?.delete)
+        XCTAssertNotNil(capabilities.sessionCapabilities?.resume)
     }
 
     func testLoadSessionResponseEncodingOmitsSessionIdByDefault() throws {
@@ -316,11 +443,201 @@ final class ACPModelTests: XCTestCase {
         XCTAssertEqual(fs["writeTextFile"] as? Bool, true)
     }
 
+    func testDraftCapabilitiesEncoding() throws {
+        let capabilities = ClientCapabilities(
+            fs: FileSystemCapabilities(readTextFile: true, writeTextFile: false),
+            terminal: false,
+            session: ClientSessionCapabilities(
+                configOptions: SessionConfigOptionsCapabilities(boolean: BooleanConfigOptionCapabilities())
+            ),
+            plan: PlanCapabilities(),
+            auth: AuthCapabilities(terminal: true),
+            elicitation: ElicitationCapabilities(form: ElicitationFormCapabilities(), url: ElicitationUrlCapabilities()),
+            nes: ClientNesCapabilities(jump: NesJumpCapabilities(), rename: NesRenameCapabilities()),
+            positionEncodings: [.utf8, .utf16]
+        )
+
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(capabilities)) as! [String: Any]
+
+        XCTAssertNotNil(json["session"])
+        XCTAssertNotNil(json["plan"])
+        XCTAssertEqual((json["auth"] as? [String: Any])?["terminal"] as? Bool, true)
+        XCTAssertNotNil(json["elicitation"])
+        XCTAssertNotNil(json["nes"])
+        XCTAssertEqual(json["positionEncodings"] as? [String], ["utf-8", "utf-16"])
+    }
+
+    func testAgentCapabilitiesDecodeDraftFeatures() throws {
+        let json = """
+        {
+            "mcpCapabilities": {"http": true, "acp": true},
+            "providers": {},
+            "nes": {
+                "events": {
+                    "document": {
+                        "didOpen": {},
+                        "didChange": {"syncKind": "incremental"}
+                    }
+                },
+                "context": {
+                    "recentFiles": {"maxCount": 5}
+                }
+            },
+            "positionEncoding": "utf-8"
+        }
+        """
+
+        let capabilities = try JSONDecoder().decode(AgentCapabilities.self, from: json.data(using: .utf8)!)
+
+        XCTAssertEqual(capabilities.mcpCapabilities?.acp, true)
+        XCTAssertNotNil(capabilities.providers)
+        XCTAssertNotNil(capabilities.nes?.events?.document?.didOpen)
+        XCTAssertEqual(capabilities.nes?.events?.document?.didChange?.syncKind, .incremental)
+        XCTAssertEqual(capabilities.nes?.context?.recentFiles?.maxCount, 5)
+        XCTAssertEqual(capabilities.positionEncoding?.value, "utf-8")
+    }
+
+    func testDraftMCPServerAcpEncodingAndLegacyDecode() throws {
+        let config = MCPServerConfig.acp(MCPAcpServerConfig(name: "Client MCP", serverId: "server-1"))
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as! [String: Any]
+
+        XCTAssertEqual(json["type"] as? String, "acp")
+        XCTAssertEqual(json["name"] as? String, "Client MCP")
+        XCTAssertEqual(json["serverId"] as? String, "server-1")
+
+        let legacy = """
+        {"type":"acp","name":"Client MCP","id":"legacy-server"}
+        """
+        let decoded = try JSONDecoder().decode(MCPServerConfig.self, from: legacy.data(using: .utf8)!)
+
+        if case .acp(let acp) = decoded {
+            XCTAssertEqual(acp.serverId.value, "legacy-server")
+        } else {
+            XCTFail("Expected ACP MCP server config")
+        }
+    }
+
+    func testPlanUpdateAndRemovedSessionUpdates() throws {
+        let itemsJson = """
+        {
+            "sessionUpdate": "plan_update",
+            "plan": {
+                "type": "items",
+                "id": "p1",
+                "entries": [
+                    {"content": "Ship draft support", "priority": "high", "status": "in_progress"}
+                ]
+            }
+        }
+        """
+        let removedJson = """
+        {
+            "sessionUpdate": "plan_removed",
+            "id": "p1"
+        }
+        """
+
+        let decoder = JSONDecoder()
+        let update = try decoder.decode(SessionUpdate.self, from: itemsJson.data(using: .utf8)!)
+        let removed = try decoder.decode(SessionUpdate.self, from: removedJson.data(using: .utf8)!)
+
+        XCTAssertEqual(update.sessionUpdateType, "plan_update")
+        if case .items(let items) = update.planUpdate?.plan {
+            XCTAssertEqual(items.planId, "p1")
+            XCTAssertEqual(items.entries.first?.content, "Ship draft support")
+        } else {
+            XCTFail("Expected item plan update")
+        }
+
+        XCTAssertEqual(removed.planRemoved?.planId, "p1")
+
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(update)) as! [String: Any]
+        let encodedPlan = encoded["plan"] as? [String: Any]
+        XCTAssertEqual(encoded["sessionUpdate"] as? String, "plan_update")
+        XCTAssertEqual(encodedPlan?["planId"] as? String, "p1")
+    }
+
+    func testDraftProvidersElicitationNesAndDocumentModels() throws {
+        let provider = ProviderInfo(
+            providerId: "anthropic",
+            supported: [.anthropic, .openai],
+            required: true,
+            current: ProviderCurrentConfig(apiType: .anthropic, baseUrl: "https://api.anthropic.com")
+        )
+        let elicitation = CreateElicitationRequest(
+            mode: "form",
+            message: "Choose model",
+            sessionId: SessionId("session-1"),
+            requestedSchema: ElicitationSchema(
+                properties: ["model": AnyCodable(["type": "string"])]
+            )
+        )
+        let suggestion = NesSuggestion(
+            kind: "edit",
+            id: "sug-1",
+            uri: "file:///tmp/main.swift",
+            edits: [
+                NesTextEdit(
+                    range: ACPModel.TextRange(
+                        start: TextPosition(line: 1, character: 0),
+                        end: TextPosition(line: 1, character: 3)
+                    ),
+                    newText: "let"
+                )
+            ]
+        )
+        let suggestRequest = SuggestNesRequest(
+            sessionId: SessionId("session-1"),
+            uri: "file:///tmp/main.swift",
+            version: 3,
+            position: TextPosition(line: 1, character: 4),
+            triggerKind: .manual,
+            context: NesSuggestContext(
+                recentFiles: [
+                    NesRecentFile(uri: "file:///tmp/other.swift", languageId: "swift", text: "let other = 1"),
+                ],
+                diagnostics: [
+                    NesDiagnostic(
+                        uri: "file:///tmp/main.swift",
+                        range: ACPModel.TextRange(
+                            start: TextPosition(line: 1, character: 0),
+                            end: TextPosition(line: 1, character: 3)
+                        ),
+                        severity: .warning,
+                        message: "Replace var with let"
+                    ),
+                ]
+            )
+        )
+        let document = DidFocusDocumentNotification(
+            sessionId: SessionId("session-1"),
+            uri: "file:///tmp/main.swift",
+            version: 2,
+            position: TextPosition(line: 1, character: 4),
+            visibleRange: ACPModel.TextRange(
+                start: TextPosition(line: 0, character: 0),
+                end: TextPosition(line: 20, character: 0)
+            )
+        )
+
+        let encoder = JSONEncoder()
+        let providerJson = try JSONSerialization.jsonObject(with: encoder.encode(ListProvidersResponse(providers: [provider]))) as! [String: Any]
+        let elicitationJson = try JSONSerialization.jsonObject(with: encoder.encode(elicitation)) as! [String: Any]
+        let suggestionJson = try JSONSerialization.jsonObject(with: encoder.encode(SuggestNesResponse(suggestions: [suggestion]))) as! [String: Any]
+        let suggestRequestJson = try JSONSerialization.jsonObject(with: encoder.encode(suggestRequest)) as! [String: Any]
+        let documentJson = try JSONSerialization.jsonObject(with: encoder.encode(document)) as! [String: Any]
+
+        XCTAssertEqual(((providerJson["providers"] as? [[String: Any]])?.first)?["providerId"] as? String, "anthropic")
+        XCTAssertEqual(elicitationJson["mode"] as? String, "form")
+        XCTAssertEqual(((suggestionJson["suggestions"] as? [[String: Any]])?.first)?["kind"] as? String, "edit")
+        XCTAssertEqual(((suggestRequestJson["context"] as? [String: Any])?["diagnostics"] as? [[String: Any]])?.first?["severity"] as? String, "warning")
+        XCTAssertEqual(documentJson["visibleRange"] as? [String: Any] != nil, true)
+    }
+
     // MARK: - AnyCodable Tests
 
     func testAnyCodableWithPrimitives() throws {
         let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
 
         let intValue = AnyCodable(42)
         let intData = try encoder.encode(intValue)

@@ -33,6 +33,50 @@ public protocol ClientDelegate: AnyObject, Sendable {
 
     /// Handle permission request
     func handlePermissionRequest(request: RequestPermissionRequest) async throws -> RequestPermissionResponse
+
+    /// Handle MCP-over-ACP connect request
+    func handleMcpConnect(_ request: ConnectMcpRequest) async throws -> ConnectMcpResponse
+
+    /// Handle MCP-over-ACP request message
+    func handleMcpMessage(_ request: MessageMcpRequest) async throws -> MessageMcpResponse
+
+    /// Handle MCP-over-ACP disconnect request
+    func handleMcpDisconnect(_ request: DisconnectMcpRequest) async throws -> DisconnectMcpResponse
+
+    /// Handle MCP-over-ACP notification message
+    func handleMcpNotification(_ notification: MessageMcpNotification) async throws
+
+    /// Handle structured user input elicitation request
+    func handleCreateElicitation(_ request: CreateElicitationRequest) async throws -> CreateElicitationResponse
+
+    /// Handle URL-based elicitation completion notification
+    func handleCompleteElicitation(_ notification: CompleteElicitationNotification) async throws
+}
+
+public extension ClientDelegate {
+    func handleMcpConnect(_ request: ConnectMcpRequest) async throws -> ConnectMcpResponse {
+        throw ClientError.invalidResponse
+    }
+
+    func handleMcpMessage(_ request: MessageMcpRequest) async throws -> MessageMcpResponse {
+        throw ClientError.invalidResponse
+    }
+
+    func handleMcpDisconnect(_ request: DisconnectMcpRequest) async throws -> DisconnectMcpResponse {
+        throw ClientError.invalidResponse
+    }
+
+    func handleMcpNotification(_ notification: MessageMcpNotification) async throws {
+        // Default: no-op
+    }
+
+    func handleCreateElicitation(_ request: CreateElicitationRequest) async throws -> CreateElicitationResponse {
+        throw ClientError.invalidResponse
+    }
+
+    func handleCompleteElicitation(_ notification: CompleteElicitationNotification) async throws {
+        // Default: no-op
+    }
 }
 
 // MARK: - Typealiases for backward compatibility

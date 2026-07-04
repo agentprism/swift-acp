@@ -37,6 +37,24 @@ public struct InitializeResponse: Codable, Sendable {
         self.authMethods = authMethods
         self._meta = _meta
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolVersion = try ProtocolVersionCoding.decode(from: container, forKey: .protocolVersion)
+        agentInfo = try container.decodeIfPresent(AgentInfo.self, forKey: .agentInfo)
+        agentCapabilities = try container.decode(AgentCapabilities.self, forKey: .agentCapabilities)
+        authMethods = try container.decodeIfPresent([AuthMethod].self, forKey: .authMethods)
+        _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolVersion, forKey: .protocolVersion)
+        try container.encodeIfPresent(agentInfo, forKey: .agentInfo)
+        try container.encode(agentCapabilities, forKey: .agentCapabilities)
+        try container.encodeIfPresent(authMethods, forKey: .authMethods)
+        try container.encodeIfPresent(_meta, forKey: ._meta)
+    }
 }
 
 // MARK: - Session Management
@@ -104,6 +122,32 @@ public struct LoadSessionResponse: Codable, Sendable {
     }
 }
 
+public struct ResumeSessionResponse: Codable, Sendable {
+    public let modes: ModesInfo?
+    public let models: ModelsInfo?
+    public let configOptions: [SessionConfigOption]?
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case modes
+        case models
+        case configOptions
+        case _meta
+    }
+
+    public init(
+        modes: ModesInfo? = nil,
+        models: ModelsInfo? = nil,
+        configOptions: [SessionConfigOption]? = nil,
+        _meta: [String: AnyCodable]? = nil
+    ) {
+        self.modes = modes
+        self.models = models
+        self.configOptions = configOptions
+        self._meta = _meta
+    }
+}
+
 public struct ListSessionsResponse: Codable, Sendable {
     public let sessions: [SessionInfo]
     public let nextCursor: String?
@@ -123,6 +167,18 @@ public struct ListSessionsResponse: Codable, Sendable {
 }
 
 public struct CloseSessionResponse: Codable, Sendable {
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case _meta
+    }
+
+    public init(_meta: [String: AnyCodable]? = nil) {
+        self._meta = _meta
+    }
+}
+
+public struct DeleteSessionResponse: Codable, Sendable {
     public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
@@ -205,6 +261,18 @@ public struct AuthenticateResponse: Codable, Sendable {
     public init(success: Bool, error: String? = nil, _meta: [String: AnyCodable]? = nil) {
         self.success = success
         self.error = error
+        self._meta = _meta
+    }
+}
+
+public struct LogoutResponse: Codable, Sendable {
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case _meta
+    }
+
+    public init(_meta: [String: AnyCodable]? = nil) {
         self._meta = _meta
     }
 }

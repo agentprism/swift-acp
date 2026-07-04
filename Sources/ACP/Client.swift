@@ -160,11 +160,13 @@ public actor Client {
 
     public func newSession(
         workingDirectory: String,
+        additionalDirectories: [String]? = nil,
         mcpServers: [MCPServerConfig] = [],
         timeout: TimeInterval? = nil
     ) async throws -> NewSessionResponse {
         let request = NewSessionRequest(
             cwd: workingDirectory,
+            additionalDirectories: additionalDirectories,
             mcpServers: mcpServers
         )
 
@@ -365,11 +367,13 @@ public actor Client {
     public func loadSession(
         sessionId: SessionId,
         cwd: String,
+        additionalDirectories: [String]? = nil,
         mcpServers: [MCPServerConfig] = []
     ) async throws -> LoadSessionResponse {
         let request = LoadSessionRequest(
             sessionId: sessionId,
             cwd: cwd,
+            additionalDirectories: additionalDirectories,
             mcpServers: mcpServers
         )
 
@@ -415,6 +419,59 @@ public actor Client {
         )
     }
 
+    public func resumeSession(
+        sessionId: SessionId,
+        cwd: String,
+        additionalDirectories: [String]? = nil,
+        mcpServers: [MCPServerConfig] = []
+    ) async throws -> ResumeSessionResponse {
+        let request = ResumeSessionRequest(
+            sessionId: sessionId,
+            cwd: cwd,
+            additionalDirectories: additionalDirectories,
+            mcpServers: mcpServers
+        )
+
+        let response = try await sendRequest(method: "session/resume", params: request)
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        return try decodeEmptyTolerantResponse(
+            ResumeSessionResponse.self,
+            from: response,
+            emptyValue: ResumeSessionResponse()
+        )
+    }
+
+    public func forkSession(
+        sessionId: SessionId,
+        cwd: String,
+        additionalDirectories: [String]? = nil,
+        mcpServers: [MCPServerConfig] = []
+    ) async throws -> ForkSessionResponse {
+        let request = ForkSessionRequest(
+            sessionId: sessionId,
+            cwd: cwd,
+            additionalDirectories: additionalDirectories,
+            mcpServers: mcpServers
+        )
+
+        let response = try await sendRequest(method: "session/fork", params: request)
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        guard let result = response.result else {
+            throw ClientError.invalidResponse
+        }
+
+        let data = try encoder.encode(result)
+        return try decoder.decode(ForkSessionResponse.self, from: data)
+    }
+
     public func listSessions(
         cwd: String? = nil,
         cursor: String? = nil,
@@ -443,12 +500,279 @@ public actor Client {
             throw ClientError.agentError(error)
         }
 
+        return try decodeEmptyTolerantResponse(
+            CloseSessionResponse.self,
+            from: response,
+            emptyValue: CloseSessionResponse()
+        )
+    }
+
+    public func deleteSession(sessionId: SessionId) async throws -> DeleteSessionResponse {
+        let request = DeleteSessionRequest(sessionId: sessionId)
+        let response = try await sendRequest(method: "session/delete", params: request)
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        return try decodeEmptyTolerantResponse(
+            DeleteSessionResponse.self,
+            from: response,
+            emptyValue: DeleteSessionResponse()
+        )
+    }
+
+    public func logout() async throws -> LogoutResponse {
+        let response = try await sendRequest(method: "logout", params: LogoutRequest())
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        return try decodeEmptyTolerantResponse(
+            LogoutResponse.self,
+            from: response,
+            emptyValue: LogoutResponse()
+        )
+    }
+
+    public func listProviders() async throws -> ListProvidersResponse {
+        let response = try await sendRequest(method: "providers/list", params: ListProvidersRequest())
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
         guard let result = response.result else {
             throw ClientError.invalidResponse
         }
 
         let data = try encoder.encode(result)
-        return try decoder.decode(CloseSessionResponse.self, from: data)
+        return try decoder.decode(ListProvidersResponse.self, from: data)
+    }
+
+    public func setProvider(
+        providerId: ProviderId,
+        apiType: LlmProtocol,
+        baseUrl: String,
+        headers: [String: String]? = nil
+    ) async throws -> SetProviderResponse {
+        let request = SetProviderRequest(
+            providerId: providerId,
+            apiType: apiType,
+            baseUrl: baseUrl,
+            headers: headers
+        )
+        let response = try await sendRequest(method: "providers/set", params: request)
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        return try decodeEmptyTolerantResponse(
+            SetProviderResponse.self,
+            from: response,
+            emptyValue: SetProviderResponse()
+        )
+    }
+
+    public func disableProvider(providerId: ProviderId) async throws -> DisableProviderResponse {
+        let request = DisableProviderRequest(providerId: providerId)
+        let response = try await sendRequest(method: "providers/disable", params: request)
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        return try decodeEmptyTolerantResponse(
+            DisableProviderResponse.self,
+            from: response,
+            emptyValue: DisableProviderResponse()
+        )
+    }
+
+    public func startNes(
+        workspaceUri: String? = nil,
+        workspaceFolders: [WorkspaceFolder]? = nil,
+        repository: NesRepository? = nil
+    ) async throws -> StartNesResponse {
+        let request = StartNesRequest(
+            workspaceUri: workspaceUri,
+            workspaceFolders: workspaceFolders,
+            repository: repository
+        )
+        let response = try await sendRequest(method: "nes/start", params: request)
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        guard let result = response.result else {
+            throw ClientError.invalidResponse
+        }
+
+        let data = try encoder.encode(result)
+        return try decoder.decode(StartNesResponse.self, from: data)
+    }
+
+    public func suggestNes(
+        sessionId: SessionId,
+        uri: String,
+        version: Int64,
+        position: TextPosition,
+        selection: ACPModel.TextRange? = nil,
+        triggerKind: NesTriggerKind,
+        context: NesSuggestContext? = nil
+    ) async throws -> SuggestNesResponse {
+        let request = SuggestNesRequest(
+            sessionId: sessionId,
+            uri: uri,
+            version: version,
+            position: position,
+            selection: selection,
+            triggerKind: triggerKind,
+            context: context
+        )
+        let response = try await sendRequest(method: "nes/suggest", params: request)
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        guard let result = response.result else {
+            throw ClientError.invalidResponse
+        }
+
+        let data = try encoder.encode(result)
+        return try decoder.decode(SuggestNesResponse.self, from: data)
+    }
+
+    public func acceptNesSuggestion(sessionId: SessionId, id: String) async throws {
+        try await sendNotification(
+            method: "nes/accept",
+            params: AcceptNesNotification(sessionId: sessionId, id: id)
+        )
+    }
+
+    public func rejectNesSuggestion(sessionId: SessionId, id: String, reason: NesRejectReason? = nil) async throws {
+        try await sendNotification(
+            method: "nes/reject",
+            params: RejectNesNotification(sessionId: sessionId, id: id, reason: reason)
+        )
+    }
+
+    public func closeNes(sessionId: SessionId) async throws -> CloseNesResponse {
+        let request = CloseNesRequest(sessionId: sessionId)
+        let response = try await sendRequest(method: "nes/close", params: request)
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        return try decodeEmptyTolerantResponse(
+            CloseNesResponse.self,
+            from: response,
+            emptyValue: CloseNesResponse()
+        )
+    }
+
+    public func sendMcpMessage(
+        connectionId: McpConnectionId,
+        method: String,
+        params: AnyCodable? = nil
+    ) async throws -> MessageMcpResponse {
+        let request = MessageMcpRequest(connectionId: connectionId, method: method, params: params)
+        let response = try await sendRequest(method: "mcp/message", params: request)
+
+        if let error = response.error {
+            throw ClientError.agentError(error)
+        }
+
+        guard let result = response.result else {
+            throw ClientError.invalidResponse
+        }
+
+        return result
+    }
+
+    public func sendMcpMessageNotification(
+        connectionId: McpConnectionId,
+        method: String,
+        params: AnyCodable? = nil
+    ) async throws {
+        try await sendNotification(
+            method: "mcp/message",
+            params: MessageMcpNotification(connectionId: connectionId, method: method, params: params)
+        )
+    }
+
+    public func didOpenDocument(
+        sessionId: SessionId,
+        uri: String,
+        languageId: String,
+        version: Int64,
+        text: String
+    ) async throws {
+        try await sendNotification(
+            method: "document/didOpen",
+            params: DidOpenDocumentNotification(
+                sessionId: sessionId,
+                uri: uri,
+                languageId: languageId,
+                version: version,
+                text: text
+            )
+        )
+    }
+
+    public func didChangeDocument(
+        sessionId: SessionId,
+        uri: String,
+        version: Int64,
+        contentChanges: [TextDocumentContentChangeEvent]
+    ) async throws {
+        try await sendNotification(
+            method: "document/didChange",
+            params: DidChangeDocumentNotification(
+                sessionId: sessionId,
+                uri: uri,
+                version: version,
+                contentChanges: contentChanges
+            )
+        )
+    }
+
+    public func didCloseDocument(sessionId: SessionId, uri: String) async throws {
+        try await sendNotification(
+            method: "document/didClose",
+            params: DidCloseDocumentNotification(sessionId: sessionId, uri: uri)
+        )
+    }
+
+    public func didSaveDocument(sessionId: SessionId, uri: String) async throws {
+        try await sendNotification(
+            method: "document/didSave",
+            params: DidSaveDocumentNotification(sessionId: sessionId, uri: uri)
+        )
+    }
+
+    public func didFocusDocument(
+        sessionId: SessionId,
+        uri: String,
+        version: Int64,
+        position: TextPosition,
+        visibleRange: ACPModel.TextRange
+    ) async throws {
+        try await sendNotification(
+            method: "document/didFocus",
+            params: DidFocusDocumentNotification(
+                sessionId: sessionId,
+                uri: uri,
+                version: version,
+                position: position,
+                visibleRange: visibleRange
+            )
+        )
     }
 
     private struct LoadSessionResponsePayload: Decodable {
@@ -474,6 +798,27 @@ public actor Client {
         }
 
         return nil
+    }
+
+    private func decodeEmptyTolerantResponse<T: Decodable>(
+        _ type: T.Type,
+        from response: JSONRPCResponse,
+        emptyValue: @autoclosure () -> T
+    ) throws -> T {
+        if response.result == nil || (response.result?.value is NSNull) {
+            return emptyValue()
+        }
+
+        if let dict = response.result?.value as? [String: Any], dict.isEmpty {
+            return emptyValue()
+        }
+
+        guard let result = response.result else {
+            throw ClientError.invalidResponse
+        }
+
+        let data = try encoder.encode(result)
+        return try decoder.decode(type, from: data)
     }
 
     private func isSessionAlreadyActive(_ error: JSONRPCError) -> Bool {
@@ -587,6 +932,39 @@ public actor Client {
         try await writeMessageWithDebug(notification, method: "session/cancel")
     }
 
+    public func sendCancelRequest(requestId: RequestId) async throws {
+        guard await processManager.isRunning() else {
+            throw ClientError.processNotRunning
+        }
+
+        let params = CancelRequestNotification(requestId: requestId)
+        let paramsData = try encoder.encode(params)
+        let paramsValue = try decoder.decode(AnyCodable.self, from: paramsData)
+
+        let notification = JSONRPCNotification(
+            method: "$/cancel_request",
+            params: paramsValue
+        )
+
+        try await writeMessageWithDebug(notification, method: "$/cancel_request")
+    }
+
+    private func sendNotification<T: Encodable>(method: String, params: T) async throws {
+        guard await processManager.isRunning() else {
+            throw ClientError.processNotRunning
+        }
+
+        let paramsData = try encoder.encode(params)
+        let paramsValue = try decoder.decode(AnyCodable.self, from: paramsData)
+
+        let notification = JSONRPCNotification(
+            method: method,
+            params: paramsValue
+        )
+
+        try await writeMessageWithDebug(notification, method: method)
+    }
+
     public func terminate() async {
         await processManager.terminate()
 
@@ -628,6 +1006,7 @@ public actor Client {
 
             case .notification(let notification):
                 notificationContinuation.yield(notification)
+                await handleIncomingNotification(notification)
 
             case .request(let request):
                 await handleIncomingRequest(request)
@@ -670,6 +1049,14 @@ public actor Client {
                     message: "Internal error: \(error.localizedDescription)"
                 )
             }
+        }
+    }
+
+    private func handleIncomingNotification(_ notification: JSONRPCNotification) async {
+        do {
+            try await requestRouter.routeNotification(notification)
+        } catch {
+            logger.warning("Error handling notification \(notification.method): \(error.localizedDescription)")
         }
     }
 

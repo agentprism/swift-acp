@@ -49,8 +49,41 @@ actor ACPRequestRouter {
             return try await handleTerminalRelease(request)
         case "request_permission", "session/request_permission":
             return try await handlePermissionRequestMethod(request)
+        case "mcp/connect":
+            return try await handleMcpConnect(request)
+        case "mcp/message":
+            return try await handleMcpMessage(request)
+        case "mcp/disconnect":
+            return try await handleMcpDisconnect(request)
+        case "elicitation/create":
+            return try await handleCreateElicitation(request)
         default:
             throw ClientError.invalidResponse
+        }
+    }
+
+    func routeNotification(_ notification: JSONRPCNotification) async throws {
+        guard let delegate else { return }
+
+        switch notification.method {
+        case "mcp/message":
+            guard let params = notification.params else {
+                throw ClientError.invalidResponse
+            }
+            let data = try encoder.encode(params)
+            let notification = try decoder.decode(MessageMcpNotification.self, from: data)
+            try await delegate.handleMcpNotification(notification)
+
+        case "elicitation/complete":
+            guard let params = notification.params else {
+                throw ClientError.invalidResponse
+            }
+            let data = try encoder.encode(params)
+            let notification = try decoder.decode(CompleteElicitationNotification.self, from: data)
+            try await delegate.handleCompleteElicitation(notification)
+
+        default:
+            return
         }
     }
 
@@ -208,6 +241,68 @@ actor ACPRequestRouter {
 
         let response = try await delegate.handlePermissionRequest(request: req)
 
+        let responseData = try encoder.encode(response)
+        return try decoder.decode(AnyCodable.self, from: responseData)
+    }
+
+    private func handleMcpConnect(_ request: JSONRPCRequest) async throws -> AnyCodable {
+        guard let delegate = delegate else {
+            throw ClientError.delegateNotSet
+        }
+
+        guard let params = request.params else {
+            throw ClientError.invalidResponse
+        }
+
+        let data = try encoder.encode(params)
+        let req = try decoder.decode(ConnectMcpRequest.self, from: data)
+        let response = try await delegate.handleMcpConnect(req)
+        let responseData = try encoder.encode(response)
+        return try decoder.decode(AnyCodable.self, from: responseData)
+    }
+
+    private func handleMcpMessage(_ request: JSONRPCRequest) async throws -> AnyCodable {
+        guard let delegate = delegate else {
+            throw ClientError.delegateNotSet
+        }
+
+        guard let params = request.params else {
+            throw ClientError.invalidResponse
+        }
+
+        let data = try encoder.encode(params)
+        let req = try decoder.decode(MessageMcpRequest.self, from: data)
+        return try await delegate.handleMcpMessage(req)
+    }
+
+    private func handleMcpDisconnect(_ request: JSONRPCRequest) async throws -> AnyCodable {
+        guard let delegate = delegate else {
+            throw ClientError.delegateNotSet
+        }
+
+        guard let params = request.params else {
+            throw ClientError.invalidResponse
+        }
+
+        let data = try encoder.encode(params)
+        let req = try decoder.decode(DisconnectMcpRequest.self, from: data)
+        let response = try await delegate.handleMcpDisconnect(req)
+        let responseData = try encoder.encode(response)
+        return try decoder.decode(AnyCodable.self, from: responseData)
+    }
+
+    private func handleCreateElicitation(_ request: JSONRPCRequest) async throws -> AnyCodable {
+        guard let delegate = delegate else {
+            throw ClientError.delegateNotSet
+        }
+
+        guard let params = request.params else {
+            throw ClientError.invalidResponse
+        }
+
+        let data = try encoder.encode(params)
+        let req = try decoder.decode(CreateElicitationRequest.self, from: data)
+        let response = try await delegate.handleCreateElicitation(req)
         let responseData = try encoder.encode(response)
         return try decoder.decode(AnyCodable.self, from: responseData)
     }

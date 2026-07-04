@@ -188,6 +188,8 @@ public enum SessionUpdate: Codable, Sendable {
     case toolCall(ToolCallUpdate)
     case toolCallUpdate(ToolCallUpdateDetails)
     case plan(Plan)
+    case planUpdate(PlanUpdate)
+    case planRemoved(PlanRemoved)
     case availableCommandsUpdate([AvailableCommand])
     case currentModeUpdate(String)
     case configOptionUpdate([SessionConfigOption])
@@ -222,6 +224,12 @@ public enum SessionUpdate: Codable, Sendable {
         case "plan":
             let plan = try Plan(from: decoder)
             self = .plan(plan)
+        case "plan_update":
+            let planUpdate = try PlanUpdate(from: decoder)
+            self = .planUpdate(planUpdate)
+        case "plan_removed":
+            let planRemoved = try PlanRemoved(from: decoder)
+            self = .planRemoved(planRemoved)
         case "available_commands_update":
             let commands = try decoder.container(keyedBy: AnyCodingKey.self).decode([AvailableCommand].self, forKey: AnyCodingKey(stringValue: "availableCommands")!)
             self = .availableCommandsUpdate(commands)
@@ -264,6 +272,12 @@ public enum SessionUpdate: Codable, Sendable {
         case .plan(let plan):
             try container.encode("plan", forKey: .sessionUpdate)
             try plan.encode(to: encoder)
+        case .planUpdate(let planUpdate):
+            try container.encode("plan_update", forKey: .sessionUpdate)
+            try planUpdate.encode(to: encoder)
+        case .planRemoved(let planRemoved):
+            try container.encode("plan_removed", forKey: .sessionUpdate)
+            try planRemoved.encode(to: encoder)
         case .availableCommandsUpdate(let commands):
             try container.encode("available_commands_update", forKey: .sessionUpdate)
             var innerContainer = encoder.container(keyedBy: AnyCodingKey.self)
@@ -401,6 +415,8 @@ extension SessionUpdate {
         case .toolCall: return "tool_call"
         case .toolCallUpdate: return "tool_call_update"
         case .plan: return "plan"
+        case .planUpdate: return "plan_update"
+        case .planRemoved: return "plan_removed"
         case .availableCommandsUpdate: return "available_commands_update"
         case .currentModeUpdate: return "current_mode_update"
         case .configOptionUpdate: return "config_option_update"
@@ -506,6 +522,20 @@ extension SessionUpdate {
     public var plan: Plan? {
         switch self {
         case .plan(let plan): return plan
+        default: return nil
+        }
+    }
+
+    public var planUpdate: PlanUpdate? {
+        switch self {
+        case .planUpdate(let planUpdate): return planUpdate
+        default: return nil
+        }
+    }
+
+    public var planRemoved: PlanRemoved? {
+        switch self {
+        case .planRemoved(let planRemoved): return planRemoved
         default: return nil
         }
     }

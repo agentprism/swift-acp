@@ -158,6 +158,7 @@ public struct AuthMethod: Codable, Sendable {
 public struct SessionInfo: Codable, Sendable {
     public let sessionId: SessionId
     public let cwd: String
+    public let additionalDirectories: [String]?
     public let title: String?
     public let updatedAt: String?
     public let _meta: [String: AnyCodable]?
@@ -165,12 +166,14 @@ public struct SessionInfo: Codable, Sendable {
     public init(
         sessionId: SessionId,
         cwd: String,
+        additionalDirectories: [String]? = nil,
         title: String? = nil,
         updatedAt: String? = nil,
         _meta: [String: AnyCodable]? = nil
     ) {
         self.sessionId = sessionId
         self.cwd = cwd
+        self.additionalDirectories = additionalDirectories
         self.title = title
         self.updatedAt = updatedAt
         self._meta = _meta
@@ -183,6 +186,7 @@ public enum MCPServerConfig: Codable, Sendable {
     case stdio(StdioServerConfig)
     case http(HTTPServerConfig)
     case sse(SSEServerConfig)
+    case acp(MCPAcpServerConfig)
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -199,6 +203,8 @@ public enum MCPServerConfig: Codable, Sendable {
             self = .http(try HTTPServerConfig(from: decoder))
         case "sse":
             self = .sse(try SSEServerConfig(from: decoder))
+        case "acp":
+            self = .acp(try MCPAcpServerConfig(from: decoder))
         default:
             throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown MCP server type: \(type)")
         }
@@ -216,6 +222,9 @@ public enum MCPServerConfig: Codable, Sendable {
             try config.encode(to: encoder)
         case .sse(let config):
             try container.encode("sse", forKey: .type)
+            try config.encode(to: encoder)
+        case .acp(let config):
+            try container.encode("acp", forKey: .type)
             try config.encode(to: encoder)
         }
     }

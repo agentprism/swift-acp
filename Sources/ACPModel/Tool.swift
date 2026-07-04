@@ -342,8 +342,206 @@ public struct PlanEntry: Codable, Equatable, Sendable {
 
 public struct Plan: Codable, Equatable, Sendable {
     public let entries: [PlanEntry]
+    public let _meta: [String: AnyCodable]?
 
-    public init(entries: [PlanEntry]) {
+    enum CodingKeys: String, CodingKey {
+        case entries
+        case _meta
+    }
+
+    public static func == (lhs: Plan, rhs: Plan) -> Bool {
+        lhs.entries == rhs.entries
+    }
+
+    public init(entries: [PlanEntry], _meta: [String: AnyCodable]? = nil) {
         self.entries = entries
+        self._meta = _meta
+    }
+}
+
+// MARK: - Draft Plan Updates
+
+public typealias PlanId = String
+
+public struct PlanItems: Codable, Sendable {
+    public let planId: PlanId
+    public let entries: [PlanEntry]
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case planId
+        case id
+        case entries
+        case _meta
+    }
+
+    public init(planId: PlanId, entries: [PlanEntry], _meta: [String: AnyCodable]? = nil) {
+        self.planId = planId
+        self.entries = entries
+        self._meta = _meta
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        planId = try container.decodeIfPresent(PlanId.self, forKey: .planId)
+            ?? container.decode(PlanId.self, forKey: .id)
+        entries = try container.decode([PlanEntry].self, forKey: .entries)
+        _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(planId, forKey: .planId)
+        try container.encode(entries, forKey: .entries)
+        try container.encodeIfPresent(_meta, forKey: ._meta)
+    }
+}
+
+public struct PlanFile: Codable, Sendable {
+    public let planId: PlanId
+    public let uri: String
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case planId
+        case id
+        case uri
+        case _meta
+    }
+
+    public init(planId: PlanId, uri: String, _meta: [String: AnyCodable]? = nil) {
+        self.planId = planId
+        self.uri = uri
+        self._meta = _meta
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        planId = try container.decodeIfPresent(PlanId.self, forKey: .planId)
+            ?? container.decode(PlanId.self, forKey: .id)
+        uri = try container.decode(String.self, forKey: .uri)
+        _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(planId, forKey: .planId)
+        try container.encode(uri, forKey: .uri)
+        try container.encodeIfPresent(_meta, forKey: ._meta)
+    }
+}
+
+public struct PlanMarkdown: Codable, Sendable {
+    public let planId: PlanId
+    public let content: String
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case planId
+        case id
+        case content
+        case _meta
+    }
+
+    public init(planId: PlanId, content: String, _meta: [String: AnyCodable]? = nil) {
+        self.planId = planId
+        self.content = content
+        self._meta = _meta
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        planId = try container.decodeIfPresent(PlanId.self, forKey: .planId)
+            ?? container.decode(PlanId.self, forKey: .id)
+        content = try container.decode(String.self, forKey: .content)
+        _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(planId, forKey: .planId)
+        try container.encode(content, forKey: .content)
+        try container.encodeIfPresent(_meta, forKey: ._meta)
+    }
+}
+
+public enum PlanUpdateContent: Codable, Sendable {
+    case items(PlanItems)
+    case file(PlanFile)
+    case markdown(PlanMarkdown)
+
+    enum CodingKeys: String, CodingKey {
+        case type
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+
+        switch type {
+        case "items":
+            self = .items(try PlanItems(from: decoder))
+        case "file":
+            self = .file(try PlanFile(from: decoder))
+        case "markdown":
+            self = .markdown(try PlanMarkdown(from: decoder))
+        default:
+            throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown plan update type: \(type)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case .items(let items):
+            try container.encode("items", forKey: .type)
+            try items.encode(to: encoder)
+        case .file(let file):
+            try container.encode("file", forKey: .type)
+            try file.encode(to: encoder)
+        case .markdown(let markdown):
+            try container.encode("markdown", forKey: .type)
+            try markdown.encode(to: encoder)
+        }
+    }
+}
+
+public struct PlanUpdate: Codable, Sendable {
+    public let plan: PlanUpdateContent
+    public let _meta: [String: AnyCodable]?
+
+    public init(plan: PlanUpdateContent, _meta: [String: AnyCodable]? = nil) {
+        self.plan = plan
+        self._meta = _meta
+    }
+}
+
+public struct PlanRemoved: Codable, Sendable {
+    public let planId: PlanId
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case planId
+        case id
+        case _meta
+    }
+
+    public init(planId: PlanId, _meta: [String: AnyCodable]? = nil) {
+        self.planId = planId
+        self._meta = _meta
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        planId = try container.decodeIfPresent(PlanId.self, forKey: .planId)
+            ?? container.decode(PlanId.self, forKey: .id)
+        _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(planId, forKey: .planId)
+        try container.encodeIfPresent(_meta, forKey: ._meta)
     }
 }

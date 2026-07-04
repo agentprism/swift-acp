@@ -33,23 +33,47 @@ public struct InitializeRequest: Codable, Sendable {
         self.clientInfo = clientInfo
         self._meta = _meta
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolVersion = try ProtocolVersionCoding.decode(from: container, forKey: .protocolVersion)
+        clientCapabilities = try container.decode(ClientCapabilities.self, forKey: .clientCapabilities)
+        clientInfo = try container.decodeIfPresent(ClientInfo.self, forKey: .clientInfo)
+        _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolVersion, forKey: .protocolVersion)
+        try container.encode(clientCapabilities, forKey: .clientCapabilities)
+        try container.encodeIfPresent(clientInfo, forKey: .clientInfo)
+        try container.encodeIfPresent(_meta, forKey: ._meta)
+    }
 }
 
 // MARK: - Session Management
 
 public struct NewSessionRequest: Codable, Sendable {
     public let cwd: String
+    public let additionalDirectories: [String]?
     public let mcpServers: [MCPServerConfig]
     public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
         case cwd
+        case additionalDirectories
         case mcpServers
         case _meta
     }
 
-    public init(cwd: String, mcpServers: [MCPServerConfig] = [], _meta: [String: AnyCodable]? = nil) {
+    public init(
+        cwd: String,
+        additionalDirectories: [String]? = nil,
+        mcpServers: [MCPServerConfig] = [],
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.cwd = cwd
+        self.additionalDirectories = additionalDirectories
         self.mcpServers = mcpServers
         self._meta = _meta
     }
@@ -58,12 +82,14 @@ public struct NewSessionRequest: Codable, Sendable {
 public struct LoadSessionRequest: Codable, Sendable {
     public let sessionId: SessionId
     public let cwd: String
+    public let additionalDirectories: [String]?
     public let mcpServers: [MCPServerConfig]
     public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
         case sessionId
         case cwd
+        case additionalDirectories
         case mcpServers
         case _meta
     }
@@ -71,12 +97,68 @@ public struct LoadSessionRequest: Codable, Sendable {
     public init(
         sessionId: SessionId,
         cwd: String,
+        additionalDirectories: [String]? = nil,
         mcpServers: [MCPServerConfig] = [],
         _meta: [String: AnyCodable]? = nil
     ) {
         self.sessionId = sessionId
         self.cwd = cwd
+        self.additionalDirectories = additionalDirectories
         self.mcpServers = mcpServers
+        self._meta = _meta
+    }
+}
+
+public struct ResumeSessionRequest: Codable, Sendable {
+    public let sessionId: SessionId
+    public let cwd: String
+    public let additionalDirectories: [String]?
+    public let mcpServers: [MCPServerConfig]
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId
+        case cwd
+        case additionalDirectories
+        case mcpServers
+        case _meta
+    }
+
+    public init(
+        sessionId: SessionId,
+        cwd: String,
+        additionalDirectories: [String]? = nil,
+        mcpServers: [MCPServerConfig] = [],
+        _meta: [String: AnyCodable]? = nil
+    ) {
+        self.sessionId = sessionId
+        self.cwd = cwd
+        self.additionalDirectories = additionalDirectories
+        self.mcpServers = mcpServers
+        self._meta = _meta
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(SessionId.self, forKey: .sessionId)
+        cwd = try container.decode(String.self, forKey: .cwd)
+        additionalDirectories = try container.decodeIfPresent([String].self, forKey: .additionalDirectories)
+        mcpServers = try container.decodeIfPresent([MCPServerConfig].self, forKey: .mcpServers) ?? []
+        _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
+    }
+}
+
+public struct DeleteSessionRequest: Codable, Sendable {
+    public let sessionId: SessionId
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId
+        case _meta
+    }
+
+    public init(sessionId: SessionId, _meta: [String: AnyCodable]? = nil) {
+        self.sessionId = sessionId
         self._meta = _meta
     }
 }
@@ -125,6 +207,21 @@ public struct CloseSessionRequest: Codable, Sendable {
 
     public init(sessionId: SessionId, _meta: [String: AnyCodable]? = nil) {
         self.sessionId = sessionId
+        self._meta = _meta
+    }
+}
+
+public struct CancelRequestNotification: Codable, Sendable {
+    public let requestId: RequestId
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case requestId
+        case _meta
+    }
+
+    public init(requestId: RequestId, _meta: [String: AnyCodable]? = nil) {
+        self.requestId = requestId
         self._meta = _meta
     }
 }
@@ -266,6 +363,18 @@ public struct AuthenticateRequest: Codable, Sendable {
     public init(methodId: String, credentials: [String: String]? = nil, _meta: [String: AnyCodable]? = nil) {
         self.methodId = methodId
         self.credentials = credentials
+        self._meta = _meta
+    }
+}
+
+public struct LogoutRequest: Codable, Sendable {
+    public let _meta: [String: AnyCodable]?
+
+    enum CodingKeys: String, CodingKey {
+        case _meta
+    }
+
+    public init(_meta: [String: AnyCodable]? = nil) {
         self._meta = _meta
     }
 }

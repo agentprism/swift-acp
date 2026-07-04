@@ -208,6 +208,55 @@ final class ACPE2ETests: XCTestCase {
         await client.terminate()
     }
 
+    func testStableResumeDeleteAndLogoutRequests() async throws {
+        try createMockAgent(script: """
+        while read -r line; do
+            id=$(echo "$line" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            method=$(echo "$line" | grep -o '"method":"[^"]*"' | sed 's/"method":"\\([^"]*\\)"/\\1/')
+            sessionId=$(echo "$line" | grep -o '"sessionId":"[^"]*"' | sed 's/"sessionId":"\\([^"]*\\)"/\\1/')
+            cwd=$(echo "$line" | grep -o '"cwd":"[^"]*"' | sed 's/"cwd":"\\([^"]*\\)"/\\1/')
+
+            if [ "$method" = "initialize" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{"protocolVersion":1,"agentCapabilities":{"auth":{"logout":{}},"sessionCapabilities":{"additionalDirectories":{},"resume":{},"delete":{}}}}}'
+            elif [ "$method" = "session/resume" ]; then
+                if echo "$line" | grep -q '"additionalDirectories":\\["/tmp/shared"\\]' && [ "$sessionId" = "session-123" ] && [ "$cwd" = "/tmp/project" ]; then
+                    echo '{"jsonrpc":"2.0","id":'$id',"result":{"modes":{"currentModeId":"chat","availableModes":[{"id":"chat","name":"Chat"}]}}}'
+                else
+                    echo '{"jsonrpc":"2.0","id":'$id',"error":{"code":-32602,"message":"Unexpected resume payload"}}'
+                fi
+            elif [ "$method" = "session/delete" ]; then
+                if [ "$sessionId" = "session-123" ]; then
+                    echo '{"jsonrpc":"2.0","id":'$id',"result":{}}'
+                else
+                    echo '{"jsonrpc":"2.0","id":'$id',"error":{"code":-32602,"message":"Unexpected delete payload"}}'
+                fi
+            elif [ "$method" = "logout" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{}}'
+            fi
+        done
+        """)
+
+        let client = Client()
+        try await client.launch(agentPath: mockAgentPath)
+
+        _ = try await client.initialize(capabilities: makeCapabilities(), timeout: 5.0)
+
+        let resume = try await client.resumeSession(
+            sessionId: SessionId("session-123"),
+            cwd: "/tmp/project",
+            additionalDirectories: ["/tmp/shared"]
+        )
+        XCTAssertEqual(resume.modes?.currentModeId, "chat")
+
+        let deleteResponse = try await client.deleteSession(sessionId: SessionId("session-123"))
+        XCTAssertNotNil(deleteResponse)
+
+        let logoutResponse = try await client.logout()
+        XCTAssertNotNil(logoutResponse)
+
+        await client.terminate()
+    }
+
     func testNotificationStream() async throws {
         try createMockAgent(script: """
         while read -r line; do
