@@ -35,6 +35,17 @@ actor ACPProcessManager {
     private var onDataReceived: ((Data) async -> Void)?
     private var onTermination: ((Int32) async -> Void)?
 
+    private enum OutputChunk: Sendable {
+        case stdout(Data)
+        case stderr(Data)
+    }
+
+    private var outputContinuation: AsyncStream<OutputChunk>.Continuation?
+    private var outputConsumerTask: Task<Void, Never>?
+    private var stderrLineContinuation: AsyncStream<String>.Continuation?
+    private var stderrLineStream: AsyncStream<String>?
+    private var stderrBuffer = Data()
+
     // MARK: - Initialization
 
     init(encoder: JSONEncoder, decoder: JSONDecoder) {
@@ -155,12 +166,30 @@ actor ACPProcessManager {
             }
         }
 
+        startOutputProcessing()
         startReading()
         startReadingStderr()
     }
 
     func isRunning() -> Bool {
         return process?.isRunning == true
+    }
+
+    func processIdentifier() -> Int32? {
+        guard process?.isRunning == true, let pid = process?.processIdentifier, pid > 0 else {
+            return nil
+        }
+        return pid
+    }
+
+    func processGroupIdentifier() -> Int32? {
+        guard process?.isRunning == true else { return nil }
+        return processGroupId
+    }
+
+    func stderrLines() -> AsyncStream<String>? {
+        guard process != nil else { return nil }
+        return stderrLineStream
     }
 
     func terminate() async {
@@ -174,6 +203,8 @@ actor ACPProcessManager {
         try? stdinPipe?.fileHandleForWriting.close()
         try? stdoutPipe?.fileHandleForReading.close()
         try? stderrPipe?.fileHandleForReading.close()
+
+        await finishOutputProcessing()
 
         if let proc, proc.isRunning {
             if let pgid {
@@ -231,10 +262,30 @@ actor ACPProcessManager {
 
     // MARK: - Private Methods
 
-    private func startReading() {
-        guard let stdout = stdoutPipe?.fileHandleForReading else { return }
+    private func startOutputProcessing() {
+        var stderrContinuation: AsyncStream<String>.Continuation!
+        stderrLineStream = AsyncStream { stderrContinuation = $0 }
+        stderrLineContinuation = stderrContinuation
+        stderrBuffer.removeAll(keepingCapacity: true)
 
-        stdout.readabilityHandler = { [weak self] handle in
+        var outputContinuation: AsyncStream<OutputChunk>.Continuation!
+        let outputStream = AsyncStream<OutputChunk>(bufferingPolicy: .unbounded) {
+            outputContinuation = $0
+        }
+        self.outputContinuation = outputContinuation
+        outputConsumerTask = Task { [weak self] in
+            for await chunk in outputStream {
+                guard let self else { return }
+                await self.processOutput(chunk)
+            }
+        }
+    }
+
+    private func startReading() {
+        guard let stdout = stdoutPipe?.fileHandleForReading,
+              let outputContinuation else { return }
+
+        stdout.readabilityHandler = { handle in
             let data = handle.availableData
 
             guard !data.isEmpty else {
@@ -242,14 +293,13 @@ actor ACPProcessManager {
                 return
             }
 
-            Task {
-                await self?.processIncomingData(data)
-            }
+            outputContinuation.yield(.stdout(data))
         }
     }
 
     private func startReadingStderr() {
-        guard let stderr = stderrPipe?.fileHandleForReading else { return }
+        guard let stderr = stderrPipe?.fileHandleForReading,
+              let outputContinuation else { return }
 
         stderr.readabilityHandler = { handle in
             let data = handle.availableData
@@ -257,8 +307,48 @@ actor ACPProcessManager {
                 handle.readabilityHandler = nil
                 return
             }
-            // Discard stderr output
+            outputContinuation.yield(.stderr(data))
         }
+    }
+
+    private func processOutput(_ chunk: OutputChunk) async {
+        switch chunk {
+        case .stdout(let data):
+            await processIncomingData(data)
+        case .stderr(let data):
+            processStderrData(data)
+        }
+    }
+
+    private func processStderrData(_ data: Data) {
+        stderrBuffer.append(data)
+
+        while let newlineIndex = stderrBuffer.firstIndex(of: 0x0A) {
+            var line = Data(stderrBuffer[..<newlineIndex])
+            let removeCount = stderrBuffer.distance(from: stderrBuffer.startIndex, to: newlineIndex) + 1
+            stderrBuffer.removeFirst(min(removeCount, stderrBuffer.count))
+            if line.last == 0x0D {
+                line.removeLast()
+            }
+            stderrLineContinuation?.yield(String(decoding: line, as: UTF8.self))
+        }
+    }
+
+    private func finishOutputProcessing() async {
+        outputContinuation?.finish()
+        if let outputConsumerTask {
+            await outputConsumerTask.value
+        }
+        outputConsumerTask = nil
+        outputContinuation = nil
+
+        if !stderrBuffer.isEmpty {
+            stderrLineContinuation?.yield(String(decoding: stderrBuffer, as: UTF8.self))
+            stderrBuffer.removeAll(keepingCapacity: true)
+        }
+        stderrLineContinuation?.finish()
+        stderrLineContinuation = nil
+        stderrLineStream = nil
     }
 
     private func processIncomingData(_ data: Data) async {
@@ -284,7 +374,7 @@ actor ACPProcessManager {
                     guard let chunk = try stdoutHandle.read(upToCount: 65536), !chunk.isEmpty else {
                         break
                     }
-                    await processIncomingData(chunk)
+                    outputContinuation?.yield(.stdout(chunk))
                 }
             } catch {
                 // Handle already closed or invalid file handles safely
@@ -299,7 +389,7 @@ actor ACPProcessManager {
                     guard let chunk = try stderrHandle.read(upToCount: 65536), !chunk.isEmpty else {
                         break
                     }
-                    _ = chunk
+                    outputContinuation?.yield(.stderr(chunk))
                 }
             } catch {
                 // Handle already closed or invalid file handles safely
@@ -307,6 +397,7 @@ actor ACPProcessManager {
             try? stderrHandle.close()
         }
 
+        await finishOutputProcessing()
         await flushRemainingBufferIfNeeded()
 
         try? stdinPipe?.fileHandleForWriting.close()

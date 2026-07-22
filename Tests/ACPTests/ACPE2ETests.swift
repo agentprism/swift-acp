@@ -539,6 +539,203 @@ final class ACPE2ETests: XCTestCase {
 
         await client.terminate()
     }
+
+    func testPendingPermissionRequestDoesNotBlockPromptResponse() async throws {
+        try createMockAgent(script: """
+        while read -r line; do
+            id=$(echo "$line" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            method=$(echo "$line" | grep -o '"method":"[^"]*"' | sed 's/"method":"\\([^"]*\\)"/\\1/')
+
+            if [ "$method" = "initialize" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{"protocolVersion":1,"agentCapabilities":{}}}'
+            elif [ "$method" = "session/prompt" ]; then
+                printf '%s\n%s\n' \
+                    '{"jsonrpc":"2.0","id":900,"method":"session/request_permission","params":{"sessionId":"session-123","options":[{"kind":"allow_once","name":"Allow once","optionId":"allow"}],"toolCall":{"toolCallId":"tc-1","status":"pending","title":"Run command"}}}' \
+                    '{"jsonrpc":"2.0","id":'$id',"result":{"stopReason":"end_turn"}}'
+            fi
+        done
+        """)
+
+        let delegate = BlockingPermissionDelegate()
+        let client = Client()
+        await client.setDelegate(delegate)
+        try await client.launch(agentPath: mockAgentPath)
+        _ = try await client.initialize(capabilities: makeCapabilities(), timeout: 5.0)
+
+        let promptTask = Task {
+            try await client.sendPrompt(
+                sessionId: SessionId("session-123"),
+                content: [.text(TextContent(text: "Continue"))]
+            )
+        }
+        await delegate.waitUntilRequested()
+
+        let promptFinished = expectation(description: "prompt response is handled while permission is pending")
+        let completionTask = Task {
+            let response = try await promptTask.value
+            promptFinished.fulfill()
+            return response
+        }
+
+        await fulfillment(of: [promptFinished], timeout: 0.5)
+        await delegate.resolvePermission()
+
+        let response = try await completionTask.value
+        XCTAssertEqual(response.stopReason, .endTurn)
+        await client.terminate()
+    }
+
+    func testClientForwardsCompleteStderrLinesAcrossChunks() async throws {
+        try createMockAgent(script: """
+        printf 'first' >&2
+        sleep 0.05
+        printf ' line\nsecond line\n' >&2
+        sleep 10
+        """)
+
+        let client = Client()
+        try await client.launch(agentPath: mockAgentPath)
+
+        guard let stderrLines = await client.stderrLines() else {
+            XCTFail("Expected stderr stream after launch")
+            await client.terminate()
+            return
+        }
+
+        let linesTask = Task {
+            var lines: [String] = []
+            for await line in stderrLines {
+                lines.append(line)
+                if lines.count == 2 { break }
+            }
+            return lines
+        }
+
+        let lines = await linesTask.value
+        XCTAssertEqual(lines, ["first line", "second line"])
+        await client.terminate()
+    }
+
+    func testClientExposesProcessIdentifiersOnlyWhileRunning() async throws {
+        try createMockAgent(script: """
+        trap 'exit 0' TERM
+        sleep 10
+        """)
+
+        let client = Client()
+        let processIdentifierBeforeLaunch = await client.processIdentifier()
+        let processGroupIdentifierBeforeLaunch = await client.processGroupIdentifier()
+        XCTAssertNil(processIdentifierBeforeLaunch)
+        XCTAssertNil(processGroupIdentifierBeforeLaunch)
+
+        try await client.launch(agentPath: mockAgentPath)
+
+        let processIdentifier = await client.processIdentifier()
+        let processGroupIdentifier = await client.processGroupIdentifier()
+        XCTAssertNotNil(processIdentifier)
+        XCTAssertGreaterThan(processIdentifier ?? 0, 0)
+        if let processGroupIdentifier {
+            XCTAssertEqual(processGroupIdentifier, processIdentifier)
+        }
+
+        await client.terminate()
+        let processIdentifierAfterTerminate = await client.processIdentifier()
+        let processGroupIdentifierAfterTerminate = await client.processGroupIdentifier()
+        XCTAssertNil(processIdentifierAfterTerminate)
+        XCTAssertNil(processGroupIdentifierAfterTerminate)
+    }
+
+    func testStdioTransportPreservesFragmentedMessageOrder() async throws {
+        try createMockAgent(script: """
+        i=0
+        while [ $i -lt 2000 ]; do
+            printf '{"jsonrpc":"2.0","method":"sequence","params":{"value":%d' "$i"
+            printf '}}\n'
+            i=$((i + 1))
+        done
+        """)
+
+        let transport = StdioTransport()
+        let messages = transport.messages
+        let collected = expectation(description: "all fragmented messages are collected")
+        let valuesTask = Task {
+            var values: [Int] = []
+            for await message in messages {
+                let object = try JSONSerialization.jsonObject(with: message) as? [String: Any]
+                let params = object?["params"] as? [String: Any]
+                if let value = params?["value"] as? Int {
+                    values.append(value)
+                }
+            }
+            collected.fulfill()
+            return values
+        }
+
+        try await transport.launch(executablePath: mockAgentPath)
+        await fulfillment(of: [collected], timeout: 5.0)
+
+        let values = try await valuesTask.value
+        XCTAssertEqual(values, Array(0..<2000))
+        await transport.close()
+    }
+}
+
+private actor BlockingPermissionDelegate: ClientDelegate {
+    private var requestReceived = false
+    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var permissionContinuation: CheckedContinuation<RequestPermissionResponse, Never>?
+
+    func waitUntilRequested() async {
+        guard !requestReceived else { return }
+        await withCheckedContinuation { continuation in
+            requestWaiters.append(continuation)
+        }
+    }
+
+    func resolvePermission() {
+        permissionContinuation?.resume(
+            returning: RequestPermissionResponse(outcome: PermissionOutcome(optionId: "allow"))
+        )
+        permissionContinuation = nil
+    }
+
+    func handlePermissionRequest(request: RequestPermissionRequest) async throws -> RequestPermissionResponse {
+        requestReceived = true
+        requestWaiters.forEach { $0.resume() }
+        requestWaiters.removeAll()
+
+        return await withCheckedContinuation { continuation in
+            permissionContinuation = continuation
+        }
+    }
+
+    func handleFileReadRequest(_ path: String, sessionId: String, line: Int?, limit: Int?) async throws -> ReadTextFileResponse {
+        fatalError("Not used in this test")
+    }
+
+    func handleFileWriteRequest(_ path: String, content: String, sessionId: String) async throws -> WriteTextFileResponse {
+        fatalError("Not used in this test")
+    }
+
+    func handleTerminalCreate(command: String, sessionId: String, args: [String]?, cwd: String?, env: [EnvVariable]?, outputByteLimit: Int?) async throws -> CreateTerminalResponse {
+        fatalError("Not used in this test")
+    }
+
+    func handleTerminalOutput(terminalId: TerminalId, sessionId: String) async throws -> TerminalOutputResponse {
+        fatalError("Not used in this test")
+    }
+
+    func handleTerminalWaitForExit(terminalId: TerminalId, sessionId: String) async throws -> WaitForExitResponse {
+        fatalError("Not used in this test")
+    }
+
+    func handleTerminalKill(terminalId: TerminalId, sessionId: String) async throws -> KillTerminalResponse {
+        fatalError("Not used in this test")
+    }
+
+    func handleTerminalRelease(terminalId: TerminalId, sessionId: String) async throws -> ReleaseTerminalResponse {
+        fatalError("Not used in this test")
+    }
 }
 
 // MARK: - Delegate Tests

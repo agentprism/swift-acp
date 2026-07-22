@@ -27,6 +27,9 @@ public actor StdioTransport: Transport {
     private var messageContinuation: AsyncStream<Data>.Continuation?
     private let messageStream: AsyncStream<Data>
 
+    private var stdoutContinuation: AsyncStream<Data>.Continuation?
+    private var stdoutConsumerTask: Task<Void, Never>?
+
     private let encoder: JSONEncoder
 
     // MARK: - Transport Protocol
@@ -158,6 +161,7 @@ public actor StdioTransport: Transport {
         try proc.run()
         process = proc
 
+        startStdoutProcessing()
         startReading()
         startReadingStderr()
     }
@@ -181,6 +185,8 @@ public actor StdioTransport: Transport {
         try? stdoutPipe?.fileHandleForReading.close()
         try? stderrPipe?.fileHandleForReading.close()
 
+        await finishStdoutProcessing()
+
         if let proc = process, proc.isRunning {
             proc.terminate()
         }
@@ -196,10 +202,25 @@ public actor StdioTransport: Transport {
 
     // MARK: - Private Methods
 
-    private func startReading() {
-        guard let stdout = stdoutPipe?.fileHandleForReading else { return }
+    private func startStdoutProcessing() {
+        var continuation: AsyncStream<Data>.Continuation!
+        let stream = AsyncStream<Data>(bufferingPolicy: .unbounded) {
+            continuation = $0
+        }
+        stdoutContinuation = continuation
+        stdoutConsumerTask = Task { [weak self] in
+            for await data in stream {
+                guard let self else { return }
+                await self.processIncomingData(data)
+            }
+        }
+    }
 
-        stdout.readabilityHandler = { [weak self] handle in
+    private func startReading() {
+        guard let stdout = stdoutPipe?.fileHandleForReading,
+              let stdoutContinuation else { return }
+
+        stdout.readabilityHandler = { handle in
             let data = handle.availableData
 
             guard !data.isEmpty else {
@@ -207,9 +228,7 @@ public actor StdioTransport: Transport {
                 return
             }
 
-            Task {
-                await self?.processIncomingData(data)
-            }
+            stdoutContinuation.yield(data)
         }
     }
 
@@ -229,6 +248,30 @@ public actor StdioTransport: Transport {
     private func processIncomingData(_ data: Data) async {
         readBuffer.append(data)
         await drainBufferedMessages()
+    }
+
+    private func finishStdoutProcessing() async {
+        stdoutContinuation?.finish()
+        if let stdoutConsumerTask {
+            await stdoutConsumerTask.value
+        }
+        stdoutConsumerTask = nil
+        stdoutContinuation = nil
+    }
+
+    private func drainAndFinishStdout() async {
+        if let stdoutHandle = stdoutPipe?.fileHandleForReading {
+            stdoutHandle.readabilityHandler = nil
+            do {
+                while let chunk = try stdoutHandle.read(upToCount: 65_536), !chunk.isEmpty {
+                    stdoutContinuation?.yield(chunk)
+                }
+            } catch {
+                // The handle may already be closed by an explicit close.
+            }
+            try? stdoutHandle.close()
+        }
+        await finishStdoutProcessing()
     }
 
     private func drainBufferedMessages() async {
@@ -314,8 +357,13 @@ public actor StdioTransport: Transport {
     }
 
     private func handleTermination(exitCode: Int32) async {
+        await drainAndFinishStdout()
         logger.info("Process terminated with exit code: \(exitCode)")
         messageContinuation?.finish()
+        process = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+        stderrPipe = nil
     }
 }
 #endif

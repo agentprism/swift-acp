@@ -106,6 +106,21 @@ public actor Client {
         debugStream = nil
     }
 
+    /// The running agent process identifier, when this client launched one.
+    public func processIdentifier() async -> Int32? {
+        await processManager.processIdentifier()
+    }
+
+    /// The running agent process group identifier, when process grouping succeeded.
+    public func processGroupIdentifier() async -> Int32? {
+        await processManager.processGroupIdentifier()
+    }
+
+    /// Complete stderr lines emitted by the running agent.
+    public func stderrLines() async -> AsyncStream<String>? {
+        await processManager.stderrLines()
+    }
+
     public func setDelegate(_ delegate: ClientDelegate?) {
         self.delegate = delegate
         Task {
@@ -1009,7 +1024,9 @@ public actor Client {
                 await handleIncomingNotification(notification)
 
             case .request(let request):
-                await handleIncomingRequest(request)
+                Task { [weak self] in
+                    await self?.handleIncomingRequest(request)
+                }
             }
         } catch {
             if let text = String(data: data, encoding: .utf8) {
