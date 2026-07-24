@@ -451,6 +451,134 @@ final class ACPAgentTests: XCTestCase {
             "elicitation-complete:elicit-1",
         ])
     }
+
+    func testV2AgentNegotiatesRoutesPromptAndSendsUpdate() async throws {
+        let transport = TestTransport()
+        let agent = Agent(transport: transport)
+        let delegate = RecordingV2AgentDelegate()
+        await agent.setV2Delegate(delegate)
+
+        let startTask = Task { await agent.start() }
+        defer { startTask.cancel() }
+
+        let initialize = ACPV2.InitializeRequest(
+            info: ACPV2.Implementation(name: "test-client", version: "1.0")
+        )
+        await transport.pushMessage(try requestData(
+            id: 101,
+            method: "initialize",
+            params: initialize
+        ))
+
+        let initializeData = try await transport.nextSentMessage()
+        let initializeResponse = try JSONDecoder().decode(
+            JSONRPCResponse.self,
+            from: initializeData
+        )
+        let initializeResult = try XCTUnwrap(initializeResponse.result)
+        let v2Response = try JSONDecoder().decode(
+            ACPV2.InitializeResponse.self,
+            from: JSONEncoder().encode(initializeResult)
+        )
+        XCTAssertEqual(v2Response.protocolVersion, 2)
+
+        let prompt = ACPV2.PromptRequest(
+            sessionId: "session-v2",
+            prompt: [.text(ACPV2.TextContent(text: "Hello"))]
+        )
+        await transport.pushMessage(try requestData(
+            id: 102,
+            method: "session/prompt",
+            params: prompt
+        ))
+        let promptData = try await transport.nextSentMessage()
+        let promptResponse = try JSONDecoder().decode(
+            JSONRPCResponse.self,
+            from: promptData
+        )
+        XCTAssertNil(promptResponse.error)
+
+        try await agent.sendV2Update(
+            sessionId: "session-v2",
+            update: .state(.idle(stopReason: .endTurn))
+        )
+        let updateData = try await transport.nextSentMessage()
+        let update = try JSONDecoder().decode(
+            JSONRPCNotification.self,
+            from: updateData
+        )
+        XCTAssertEqual(update.method, "session/update")
+
+        await transport.pushMessage(try JSONEncoder().encode(
+            JSONRPCNotification(
+                method: "session/cancel",
+                params: AnyCodable(["sessionId": "session-v2"])
+            )
+        ))
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let events = await delegate.recordedEvents()
+        XCTAssertEqual(events, [
+            "initialize:2:test-client",
+            "prompt:session-v2",
+            "cancel:session-v2",
+        ])
+
+        await transport.finish()
+        _ = await startTask.result
+    }
+
+    func testV2InitializeFallsBackToV1OnSameConnection() async throws {
+        let transport = TestTransport()
+        let agent = Agent(transport: transport)
+        let delegate = RecordingAgentDelegate()
+        await agent.setDelegate(delegate)
+
+        let startTask = Task { await agent.start() }
+        defer { startTask.cancel() }
+
+        let initialize = ACPV2.InitializeRequest(
+            info: ACPV2.Implementation(name: "negotiating-client", version: "1.0")
+        )
+        await transport.pushMessage(try requestData(
+            id: 103,
+            method: "initialize",
+            params: initialize
+        ))
+
+        let responseData = try await transport.nextSentMessage()
+        let response = try JSONDecoder().decode(
+            JSONRPCResponse.self,
+            from: responseData
+        )
+        let result = try XCTUnwrap(response.result)
+        let v1Response = try JSONDecoder().decode(
+            InitializeResponse.self,
+            from: JSONEncoder().encode(result)
+        )
+
+        XCTAssertEqual(v1Response.protocolVersion, 1)
+        let events = await delegate.recordedEvents()
+        XCTAssertEqual(
+            events,
+            ["initialize:1:negotiating-client"]
+        )
+
+        await transport.finish()
+        _ = await startTask.result
+    }
+
+    private func requestData<T: Encodable>(
+        id: Int,
+        method: String,
+        params: T
+    ) throws -> Data {
+        let encoded = try JSONEncoder().encode(params)
+        let value = try JSONDecoder().decode(AnyCodable.self, from: encoded)
+        return try JSONEncoder().encode(
+            JSONRPCRequest(id: .number(id), method: method, params: value)
+        )
+    }
 }
 
 private actor TestTransport: Transport {
@@ -511,7 +639,12 @@ private actor RecordingAgentDelegate: AgentDelegate {
     private var events: [String] = []
 
     func handleInitialize(_ request: InitializeRequest) async throws -> InitializeResponse {
-        fatalError("Not used in this test")
+        events.append("initialize:\(request.protocolVersion):\(request.clientInfo?.name ?? "")")
+        return InitializeResponse(
+            protocolVersion: 1,
+            agentCapabilities: AgentCapabilities(),
+            agentInfo: AgentInfo(name: "test-v1-agent", version: "1.0")
+        )
     }
 
     func handleNewSession(_ request: NewSessionRequest) async throws -> NewSessionResponse {
@@ -599,6 +732,45 @@ private actor RecordingAgentDelegate: AgentDelegate {
 
     func handleMcpNotification(_ notification: MessageMcpNotification) async throws {
         events.append("mcp-notification:\(notification.connectionId.value):\(notification.method)")
+    }
+
+    func recordedEvents() -> [String] {
+        events
+    }
+}
+
+private actor RecordingV2AgentDelegate: V2AgentDelegate {
+    private var events: [String] = []
+
+    func handleInitialize(
+        _ request: ACPV2.InitializeRequest
+    ) async throws -> ACPV2.InitializeResponse {
+        events.append("initialize:\(request.protocolVersion):\(request.info.name)")
+        return ACPV2.InitializeResponse(
+            info: ACPV2.Implementation(name: "test-v2-agent", version: "1.0"),
+            capabilities: ACPV2.AgentCapabilities(
+                session: ACPV2.SessionCapabilities(
+                    prompt: ACPV2.PromptCapabilities()
+                )
+            )
+        )
+    }
+
+    func handleNewSession(
+        _ request: ACPV2.NewSessionRequest
+    ) async throws -> ACPV2.NewSessionResponse {
+        ACPV2.NewSessionResponse(sessionId: "session-v2")
+    }
+
+    func handlePrompt(
+        _ request: ACPV2.PromptRequest
+    ) async throws -> ACPV2.PromptResponse {
+        events.append("prompt:\(request.sessionId)")
+        return ACPV2.PromptResponse()
+    }
+
+    func handleCancel(_ sessionId: ACPV2.SessionId) async throws {
+        events.append("cancel:\(sessionId)")
     }
 
     func recordedEvents() -> [String] {

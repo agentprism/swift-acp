@@ -27,6 +27,9 @@ public struct DebugMessage: Sendable {
     }
 }
 
+public typealias ClientRequestHandler =
+    @Sendable (JSONRPCRequest) async throws -> AnyCodable
+
 public actor Client {
     // MARK: - Properties
 
@@ -47,6 +50,7 @@ public actor Client {
 
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
+    private var requestHandler: ClientRequestHandler?
 
     public weak var delegate: ClientDelegate?
 
@@ -126,6 +130,14 @@ public actor Client {
         Task {
             await requestRouter.setDelegate(delegate)
         }
+    }
+
+    /// Installs a protocol-specific or extension request handler.
+    ///
+    /// When present, this handler receives incoming Agent-to-Client requests
+    /// instead of the stable v1 request router.
+    public func setRequestHandler(_ handler: ClientRequestHandler?) {
+        requestHandler = handler
     }
 
     public func launch(
@@ -964,7 +976,7 @@ public actor Client {
         try await writeMessageWithDebug(notification, method: "$/cancel_request")
     }
 
-    private func sendNotification<T: Encodable>(method: String, params: T) async throws {
+    public func sendNotification<T: Encodable>(method: String, params: T) async throws {
         guard await processManager.isRunning() else {
             throw ClientError.processNotRunning
         }
@@ -1048,7 +1060,12 @@ public actor Client {
 
     private func handleIncomingRequest(_ request: JSONRPCRequest) async {
         do {
-            let response = try await requestRouter.routeRequest(request)
+            let response: AnyCodable
+            if let requestHandler {
+                response = try await requestHandler(request)
+            } else {
+                response = try await requestRouter.routeRequest(request)
+            }
             try await sendSuccessResponse(requestId: request.id, result: response)
         } catch {
             logger.error("Error handling request \(request.method): \(error.localizedDescription)")

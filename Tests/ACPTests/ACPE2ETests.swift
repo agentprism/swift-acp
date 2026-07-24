@@ -678,6 +678,157 @@ final class ACPE2ETests: XCTestCase {
         XCTAssertEqual(values, Array(0..<2000))
         await transport.close()
     }
+
+    func testV2ClientLifecycleAndTypedUpdateStream() async throws {
+        try createMockAgent(script: """
+        while read -r line; do
+            id=$(echo "$line" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            method=$(echo "$line" | grep -o '"method":"[^"]*"' | sed 's/"method":"\\([^"]*\\)"/\\1/')
+
+            if [ "$method" = "initialize" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{"protocolVersion":2,"info":{"name":"MockV2Agent","version":"2.0.0"}}}'
+            elif [ "$method" = "session/new" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{"sessionId":"session-v2"}}'
+            elif [ "$method" = "session/prompt" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{}}'
+                echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-v2","update":{"sessionUpdate":"state_update","state":"idle","stopReason":"end_turn"}}}'
+            fi
+        done
+        """)
+
+        let client = V2Client()
+        try await client.launch(agentPath: mockAgentPath)
+
+        let initialize = try await client.initialize(
+            info: ACPV2.Implementation(name: "test-client", version: "1.0"),
+            timeout: 5.0
+        )
+        XCTAssertEqual(initialize.protocolVersion, 2)
+        XCTAssertEqual(initialize.info.name, "MockV2Agent")
+
+        let session = try await client.newSession(
+            ACPV2.NewSessionRequest(cwd: "/tmp"),
+            timeout: 5.0
+        )
+        XCTAssertEqual(session.sessionId, "session-v2")
+
+        let updateTask = Task {
+            var iterator = client.updates.makeAsyncIterator()
+            return await iterator.next()
+        }
+        _ = try await client.sendPrompt(
+            ACPV2.PromptRequest(
+                sessionId: session.sessionId,
+                prompt: [.text(ACPV2.TextContent(text: "Hello"))]
+            ),
+            timeout: 5.0
+        )
+
+        let notification = await updateTask.value
+        XCTAssertEqual(notification?.sessionId, "session-v2")
+        guard case .state(.idle(let reason, _))? = notification?.update else {
+            return XCTFail("Expected typed idle update")
+        }
+        XCTAssertEqual(reason?.rawValue, "end_turn")
+
+        await client.terminate()
+    }
+
+    func testAutomaticNegotiationRelaunchesWhenV1InitializeDiffers() async throws {
+        let launchLog = tempDir.appendingPathComponent("launches.log").path
+        try createMockAgent(script: """
+        echo launch >> "\(launchLog)"
+        while read -r line; do
+            id=$(echo "$line" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            method=$(echo "$line" | grep -o '"method":"[^"]*"' | sed 's/"method":"\\([^"]*\\)"/\\1/')
+
+            if [ "$method" = "initialize" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"MockV1Agent","version":"1.0.0"}}}'
+            elif [ "$method" = "session/new" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{"sessionId":"fresh-v1-connection"}}'
+            fi
+        done
+        """)
+
+        let negotiated = try await ACPClientConnector.connect(
+            agentPath: mockAgentPath,
+            selection: .automatic,
+            v1Capabilities: makeCapabilities(),
+            v2Info: ACPV2.Implementation(name: "test-client", version: "1.0"),
+            timeout: 5.0
+        )
+
+        guard case .v1(let client, let initialize) = negotiated else {
+            return XCTFail("Expected negotiated v1 client")
+        }
+        XCTAssertEqual(initialize.protocolVersion, 1)
+
+        let session = try await client.newSession(
+            workingDirectory: "/tmp",
+            timeout: 5.0
+        )
+        XCTAssertEqual(session.sessionId.value, "fresh-v1-connection")
+
+        await client.terminate()
+
+        let launches = try String(contentsOfFile: launchLog, encoding: .utf8)
+            .split(separator: "\n")
+        XCTAssertEqual(launches.count, 2)
+    }
+
+    func testAutomaticNegotiationReusesCompatibleV1Connection() async throws {
+        let launchLog = tempDir.appendingPathComponent("launches.log").path
+        try createMockAgent(script: """
+        echo launch >> "\(launchLog)"
+        while read -r line; do
+            id=$(echo "$line" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            method=$(echo "$line" | grep -o '"method":"[^"]*"' | sed 's/"method":"\\([^"]*\\)"/\\1/')
+
+            if [ "$method" = "initialize" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"MockV1Agent","version":"1.0.0"}}}'
+            elif [ "$method" = "session/new" ]; then
+                echo '{"jsonrpc":"2.0","id":'$id',"result":{"sessionId":"reused-connection"}}'
+            fi
+        done
+        """)
+
+        let capabilities = ClientCapabilities(
+            fs: FileSystemCapabilities(
+                readTextFile: false,
+                writeTextFile: false
+            ),
+            terminal: false,
+            session: ClientSessionCapabilities(
+                configOptions: SessionConfigOptionsCapabilities(
+                    boolean: BooleanConfigOptionCapabilities()
+                )
+            )
+        )
+        let info = ClientInfo(name: "test-client", version: "1.0")
+        let negotiated = try await ACPClientConnector.connect(
+            agentPath: mockAgentPath,
+            selection: .automatic,
+            v1Capabilities: capabilities,
+            v1Info: info,
+            v2Info: ACPV2.Implementation(name: "test-client", version: "1.0"),
+            timeout: 5.0
+        )
+
+        guard case .v1(let client, _) = negotiated else {
+            return XCTFail("Expected negotiated v1 client")
+        }
+        let session = try await client.newSession(
+            workingDirectory: "/tmp",
+            timeout: 5.0
+        )
+        XCTAssertEqual(session.sessionId.value, "reused-connection")
+
+        await client.terminate()
+
+        let launches = try String(contentsOfFile: launchLog, encoding: .utf8)
+            .split(separator: "\n")
+        XCTAssertEqual(launches.count, 1)
+    }
 }
 
 private actor BlockingPermissionDelegate: ClientDelegate {
@@ -972,4 +1123,5 @@ final class ACPTypeIntegrationTests: XCTestCase {
         XCTAssertEqual(request.toolCall.status, .pending)
         XCTAssertEqual(request.toolCall.title, "Run npm install")
     }
+
 }

@@ -87,6 +87,70 @@ let response = try await client.sendPrompt(
 await client.terminate()
 ```
 
+## ACP v2 (experimental)
+
+ACP v2 is currently a draft. Its wire format is intentionally isolated under
+`ACPV2`, while the existing `Client` and model types remain v1-compatible.
+
+For most clients, use automatic negotiation:
+
+```swift
+let connection = try await ACPClientConnector.connect(
+    agentPath: "/path/to/agent",
+    selection: .automatic,
+    v1Capabilities: ClientCapabilities(
+        fs: FileSystemCapabilities(readTextFile: true, writeTextFile: true),
+        terminal: true
+    ),
+    v2Info: ACPV2.Implementation(
+        name: "my-client",
+        title: "My Client",
+        version: "1.0.0"
+    )
+)
+
+switch connection {
+case .v2(let client, _):
+    let session = try await client.newSession(
+        ACPV2.NewSessionRequest(cwd: "/path/to/project")
+    )
+
+    // v2 acknowledges the prompt immediately. Completion arrives later as an
+    // idle state update on client.updates.
+    try await client.sendPrompt(
+        ACPV2.PromptRequest(
+            sessionId: session.sessionId,
+            prompt: [.text(ACPV2.TextContent(text: "Explain this codebase"))]
+        )
+    )
+
+case .v1(let client, _):
+    // Continue with the existing v1 Client API on the same connection.
+    _ = client
+}
+```
+
+Automatic negotiation sends a v2 `initialize` request first. If the agent
+successfully replies with `protocolVersion: 1`, swift-acp reuses that connection
+when the normalized v2 initialization matches the requested v1 initialization.
+Otherwise it relaunches the agent and initializes a fresh v1 connection. A
+rejected initialization is surfaced as an error; it is not treated as
+permission to retry. Use `.v1` or `.v2` when the required version is known in
+advance.
+
+Agents can support both versions through one runtime:
+
+```swift
+let agent = Agent(transport: StdinTransport())
+await agent.setDelegate(myV1Delegate)
+await agent.setV2Delegate(myV2Delegate)
+await agent.start()
+```
+
+The selected protocol is fixed by the first successful initialization. V2
+delegates use `V2AgentDelegate`; typed updates, permission requests, and
+elicitations are available through the v2 `Agent` methods.
+
 ## Client Lifecycle
 
 ### 1. Create and Configure

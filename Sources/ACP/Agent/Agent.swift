@@ -215,6 +215,8 @@ public actor Agent {
     private let decoder: JSONDecoder
 
     private weak var delegate: AgentDelegate?
+    private weak var v2Delegate: V2AgentDelegate?
+    private var negotiatedProtocol: NegotiatedProtocol?
     private var pendingRequests: [RequestId: CheckedContinuation<JSONRPCResponse, Error>] = [:]
     private var nextRequestId: Int = 1
 
@@ -248,6 +250,12 @@ public actor Agent {
         self.delegate = delegate
     }
 
+    /// Sets the ACP v2 delegate. Install both delegates to support negotiation
+    /// with v1 and v2 clients on the same agent runtime.
+    public func setV2Delegate(_ delegate: V2AgentDelegate?) {
+        self.v2Delegate = delegate
+    }
+
     /// Start processing incoming messages from the transport
     public func start() async {
         for await data in transport.messages {
@@ -265,6 +273,58 @@ public actor Agent {
         let message = JSONRPCNotification(method: "session/update", params: params)
         let data = try encoder.encode(message)
         try await transport.send(data)
+    }
+
+    /// Send an ACP v2 session update notification.
+    public func sendV2Update(
+        sessionId: ACPV2.SessionId,
+        update: ACPV2.SessionUpdate
+    ) async throws {
+        guard negotiatedProtocol == .v2 else {
+            throw ACPProtocolNegotiationError.notInitialized
+        }
+        try await sendNotification(
+            method: "session/update",
+            params: ACPV2.SessionUpdateNotification(sessionId: sessionId, update: update)
+        )
+    }
+
+    /// Request permission from an ACP v2 client.
+    public func requestV2Permission(
+        _ request: ACPV2.RequestPermissionRequest
+    ) async throws -> ACPV2.RequestPermissionResponse {
+        guard negotiatedProtocol == .v2 else {
+            throw ACPProtocolNegotiationError.notInitialized
+        }
+        let response = try await sendRequest(
+            method: "session/request_permission",
+            params: request
+        )
+        return try decodeResponse(ACPV2.RequestPermissionResponse.self, from: response)
+    }
+
+    /// Request structured input from an ACP v2 client.
+    public func createV2Elicitation(
+        _ request: ACPV2.CreateElicitationRequest
+    ) async throws -> ACPV2.CreateElicitationResponse {
+        guard negotiatedProtocol == .v2 else {
+            throw ACPProtocolNegotiationError.notInitialized
+        }
+        let response = try await sendRequest(method: "elicitation/create", params: request)
+        return try decodeResponse(ACPV2.CreateElicitationResponse.self, from: response)
+    }
+
+    /// Notify an ACP v2 client that URL elicitation has completed.
+    public func completeV2Elicitation(
+        elicitationId: ACPV2.ElicitationId
+    ) async throws {
+        guard negotiatedProtocol == .v2 else {
+            throw ACPProtocolNegotiationError.notInitialized
+        }
+        try await sendNotification(
+            method: "elicitation/complete",
+            params: ACPV2.CompleteElicitationNotification(elicitationId: elicitationId)
+        )
     }
 
     /// Send an agent message chunk update
@@ -393,16 +453,19 @@ public actor Agent {
     }
 
     private func routeRequest(_ request: JSONRPCRequest) async throws -> AnyCodable {
+        if request.method == "initialize" {
+            return try await routeInitialize(request.params)
+        }
+
+        if negotiatedProtocol == .v2 {
+            return try await routeV2Request(request)
+        }
+
         guard let delegate else {
             throw ClientError.delegateNotSet
         }
 
         switch request.method {
-        case "initialize":
-            let params = try decodeParams(InitializeRequest.self, from: request.params)
-            let response = try await delegate.handleInitialize(params)
-            return try encodeResult(response)
-
         case "session/new":
             let params = try decodeParams(NewSessionRequest.self, from: request.params)
             let response = try await delegate.handleNewSession(params)
@@ -494,7 +557,110 @@ public actor Agent {
         }
     }
 
+    private func routeInitialize(_ params: AnyCodable?) async throws -> AnyCodable {
+        guard negotiatedProtocol == nil else {
+            throw ACPProtocolNegotiationError.alreadyInitialized
+        }
+
+        let envelope = try decodeParams(ProtocolVersionEnvelope.self, from: params)
+        if envelope.protocolVersion >= ACPV2.protocolVersion, let v2Delegate {
+            let request = try decodeParams(ACPV2.InitializeRequest.self, from: params)
+            let response = try await v2Delegate.handleInitialize(request)
+            guard response.protocolVersion == ACPV2.protocolVersion else {
+                throw ACPProtocolNegotiationError.unsupportedVersion(
+                    response.protocolVersion
+                )
+            }
+            negotiatedProtocol = .v2
+            return try encodeResult(response)
+        }
+
+        guard let delegate else {
+            throw ACPProtocolNegotiationError.unsupportedVersion(
+                envelope.protocolVersion
+            )
+        }
+
+        let request: InitializeRequest
+        if envelope.protocolVersion >= ACPV2.protocolVersion {
+            let v2Request = try decodeParams(ACPV2.InitializeRequest.self, from: params)
+            request = normalizedV1InitializeRequest(from: v2Request)
+        } else {
+            request = try decodeParams(InitializeRequest.self, from: params)
+        }
+
+        let response = try await delegate.handleInitialize(request)
+        guard response.protocolVersion == 1 else {
+            throw ACPProtocolNegotiationError.unsupportedVersion(
+                response.protocolVersion
+            )
+        }
+        negotiatedProtocol = .v1
+        return try encodeResult(response)
+    }
+
+    private func routeV2Request(_ request: JSONRPCRequest) async throws -> AnyCodable {
+        guard let v2Delegate else {
+            throw ClientError.delegateNotSet
+        }
+
+        switch request.method {
+        case "auth/login":
+            let params = try decodeParams(ACPV2.LoginAuthRequest.self, from: request.params)
+            return try encodeResult(try await v2Delegate.handleLogin(params))
+        case "auth/logout":
+            let params = try decodeParamsIfPresent(
+                ACPV2.LogoutAuthRequest.self,
+                from: request.params
+            )
+            return try encodeResult(try await v2Delegate.handleLogout(params))
+        case "session/new":
+            let params = try decodeParams(ACPV2.NewSessionRequest.self, from: request.params)
+            return try encodeResult(try await v2Delegate.handleNewSession(params))
+        case "session/resume":
+            let params = try decodeParams(ACPV2.ResumeSessionRequest.self, from: request.params)
+            return try encodeResult(try await v2Delegate.handleResumeSession(params))
+        case "session/list":
+            let params = try decodeParamsIfPresent(
+                ACPV2.ListSessionsRequest.self,
+                from: request.params
+            )
+            return try encodeResult(try await v2Delegate.handleListSessions(params))
+        case "session/close":
+            let params = try decodeParams(ACPV2.CloseSessionRequest.self, from: request.params)
+            try await v2Delegate.handleCancel(params.sessionId)
+            return try encodeResult(try await v2Delegate.handleCloseSession(params))
+        case "session/delete":
+            let params = try decodeParams(ACPV2.DeleteSessionRequest.self, from: request.params)
+            return try encodeResult(try await v2Delegate.handleDeleteSession(params))
+        case "session/set_config_option":
+            let params = try decodeParams(
+                ACPV2.SetSessionConfigOptionRequest.self,
+                from: request.params
+            )
+            return try encodeResult(try await v2Delegate.handleSetConfigOption(params))
+        case "session/prompt":
+            let params = try decodeParams(ACPV2.PromptRequest.self, from: request.params)
+            return try encodeResult(try await v2Delegate.handlePrompt(params))
+        default:
+            requestContinuation?.yield(AgentRequest(
+                id: request.id,
+                method: request.method,
+                params: request.params
+            ))
+            return try await v2Delegate.handleV2Request(
+                method: request.method,
+                params: request.params
+            )
+        }
+    }
+
     private func handleNotification(_ notification: JSONRPCNotification) async {
+        if negotiatedProtocol == .v2 {
+            await handleV2Notification(notification)
+            return
+        }
+
         switch notification.method {
         case "session/cancel":
             if let params = notification.params,
@@ -541,6 +707,29 @@ public actor Agent {
             }
         default:
             logger.debug("Unhandled notification: \(notification.method)")
+        }
+    }
+
+    private func handleV2Notification(_ notification: JSONRPCNotification) async {
+        switch notification.method {
+        case "session/cancel":
+            guard let params = try? decodeParams(
+                ACPV2.CancelSessionNotification.self,
+                from: notification.params
+            ) else {
+                return
+            }
+            try? await v2Delegate?.handleCancel(params.sessionId)
+        case "$/cancel_request":
+            if let request = try? decodeParams(
+                CancelRequestNotification.self,
+                from: notification.params
+            ) {
+                pendingRequests.removeValue(forKey: request.requestId)?
+                    .resume(throwing: CancellationError())
+            }
+        default:
+            logger.debug("Unhandled v2 notification: \(notification.method)")
         }
     }
 
@@ -667,5 +856,14 @@ public actor Agent {
     private func encodeResult<T: Encodable>(_ result: T) throws -> AnyCodable {
         let data = try encoder.encode(result)
         return try decoder.decode(AnyCodable.self, from: data)
+    }
+
+    private enum NegotiatedProtocol {
+        case v1
+        case v2
+    }
+
+    private struct ProtocolVersionEnvelope: Decodable {
+        let protocolVersion: Int
     }
 }
