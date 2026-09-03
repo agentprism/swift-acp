@@ -7,13 +7,19 @@ let package = Package(
         .macOS(.v12),
         .iOS(.v15),
         .tvOS(.v15),
-        .watchOS(.v8)
+        .watchOS(.v8),
     ],
     products: [
         .library(name: "ACPModel", targets: ["ACPModel"]),
         .library(name: "ACP", targets: ["ACP"]),
         .library(name: "ACPHTTP", targets: ["ACPHTTP"]),
-        .library(name: "ACPRegistry", targets: ["ACPRegistry"])
+        .library(name: "ACPRegistry", targets: ["ACPRegistry"]),
+    ],
+    dependencies: [
+        .package(
+            url: "https://github.com/SimplyDanny/SwiftLintPlugins",
+            exact: "0.65.1"
+        )
     ],
     targets: [
         // Core model types (platform-independent)
@@ -54,6 +60,6 @@ let package = Package(
         .testTarget(
             name: "ACPRegistryTests",
             dependencies: ["ACPRegistry"]
-        )
+        ),
     ]
 )

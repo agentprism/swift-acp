@@ -1,14 +1,6 @@
 # swift-acp
 
-[![GitHub](https://img.shields.io/badge/-GitHub-181717?style=flat-square&logo=github&logoColor=white)](https://github.com/wiedymi)
-[![Twitter](https://img.shields.io/badge/-Twitter-1DA1F2?style=flat-square&logo=twitter&logoColor=white)](https://x.com/wiedymi)
-[![Email](https://img.shields.io/badge/-Email-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:contact@wiedymi.com)
-[![Discord](https://img.shields.io/badge/-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/zemMZtrkSb)
-[![Support me](https://img.shields.io/badge/-Support%20me-ff69b4?style=flat-square&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/vivy-company)
-
 Swift SDK for the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/). Build Apple platform applications that communicate with AI coding agents, or create your own ACP-compliant agents.
-
-Built for [Aizen](https://aizen.win) — a native macOS app for managing git worktrees and AI coding agents. Check out the [source code](https://github.com/vivy-company/aizen).
 
 ## Features
 
@@ -30,7 +22,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/wiedymi/swift-acp", from: "1.0.0")
+    .package(url: "https://github.com/agentprism/swift-acp", from: "1.0.0")
 ]
 ```
 
@@ -585,3 +577,5 @@ git submodule update --init --remote reference/agent-client-protocol reference/r
 ## License
 
 MIT
+
+Originally forked from https://github.com/wiedymi/swift-acp
