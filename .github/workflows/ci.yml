@@ -16,8 +16,10 @@ concurrency:
 jobs:
   validate:
     name: Test and lint
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
 
     steps:
       - name: Check out repository
