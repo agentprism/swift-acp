@@ -20,6 +20,7 @@
     public enum StdioTransportError: LocalizedError, Sendable {
         case alreadyConnected
         case executableNotConfigured
+        case subprocessFailure(String)
         case processExited(Int32)
         case processSignaled(Int32)
         case messageTooLarge(Int)
@@ -30,6 +31,8 @@
                 "The stdio transport is already connected."
             case .executableNotConfigured:
                 "No executable was configured for the stdio transport."
+            case .subprocessFailure(let message):
+                message
             case .processExited(let code):
                 "The ACP subprocess exited with code \(code)."
             case .processSignaled(let signal):
@@ -351,14 +354,20 @@
 
         private func processDidFail(_ error: any Error) async {
             await removeRegisteredProcess()
+            let reportedError = Self.reportedError(for: error)
             if let connectContinuation {
                 self.connectContinuation = nil
-                connectContinuation.resume(throwing: error)
+                connectContinuation.resume(throwing: reportedError)
             }
             processTask = nil
             commandContinuation = nil
             connected = false
-            finishStreams(throwing: closing ? nil : error)
+            finishStreams(throwing: closing ? nil : reportedError)
+        }
+
+        private static func reportedError(for error: any Error) -> any Error {
+            guard let subprocessError = error as? SubprocessError else { return error }
+            return StdioTransportError.subprocessFailure(subprocessError.description)
         }
 
         private func removeRegisteredProcess() async {
