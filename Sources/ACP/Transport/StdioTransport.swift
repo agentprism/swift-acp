@@ -2,368 +2,515 @@
 //  StdioTransport.swift
 //  ACP
 //
-//  STDIO-based transport for subprocess communication (macOS only)
+//  STDIO transport backed by swift-subprocess.
 //
 
 #if os(macOS)
-import Foundation
-import os.log
-import ACPModel
+    import Foundation
+    import Subprocess
+    import os
 
-/// Transport implementation using STDIO pipes for subprocess communication.
-/// This transport launches and manages a subprocess, communicating via stdin/stdout.
-public actor StdioTransport: Transport {
-    // MARK: - Properties
-
-    private var process: Process?
-    private var stdinPipe: Pipe?
-    private var stdoutPipe: Pipe?
-    private var stderrPipe: Pipe?
-
-    private var readBuffer: Data = Data()
-    private let configuration: TransportConfiguration
-    private let logger: Logger
-
-    private var messageContinuation: AsyncStream<Data>.Continuation?
-    private let messageStream: AsyncStream<Data>
-
-    private var stdoutContinuation: AsyncStream<Data>.Continuation?
-    private var stdoutConsumerTask: Task<Void, Never>?
-
-    private let encoder: JSONEncoder
-
-    // MARK: - Transport Protocol
-
-    public nonisolated var messages: AsyncStream<Data> {
-        messageStream
+    /// An executable resolved either through `PATH` or from an explicit filesystem path.
+    public enum StdioExecutable: Equatable, Sendable {
+        case name(String)
+        case path(String)
     }
 
-    public var isConnected: Bool {
-        process?.isRunning == true
-    }
+    /// Errors produced by ``StdioTransport``.
+    public enum StdioTransportError: LocalizedError, Sendable {
+        case alreadyConnected
+        case executableNotConfigured
+        case processExited(Int32)
+        case processSignaled(Int32)
+        case messageTooLarge(Int)
 
-    // MARK: - Initialization
-
-    public init(configuration: TransportConfiguration = .default) {
-        self.configuration = configuration
-        self.logger = Logger.forCategory("StdioTransport")
-        self.encoder = JSONEncoder()
-        self.encoder.outputFormatting = [.withoutEscapingSlashes]
-
-        var continuation: AsyncStream<Data>.Continuation!
-        self.messageStream = AsyncStream { cont in
-            continuation = cont
+        public var errorDescription: String? {
+            switch self {
+            case .alreadyConnected:
+                "The stdio transport is already connected."
+            case .executableNotConfigured:
+                "No executable was configured for the stdio transport."
+            case .processExited(let code):
+                "The ACP subprocess exited with code \(code)."
+            case .processSignaled(let signal):
+                "The ACP subprocess exited after signal \(signal)."
+            case .messageTooLarge(let size):
+                "The ACP subprocess emitted a message larger than the configured limit (\(size) bytes)."
+            }
         }
-        self.messageContinuation = continuation
     }
 
-    // MARK: - Lifecycle
-
-    /// Launch a subprocess with the given executable path and arguments
-    public func launch(
-        executablePath: String,
-        arguments: [String] = [],
-        workingDirectory: String? = nil,
-        environment: [String: String]? = nil
-    ) throws {
-        guard process == nil else {
-            throw ClientError.transportError("Transport already has an active process")
+    /// A subprocess transport that exchanges newline-delimited ACP JSON-RPC messages over stdio.
+    public actor StdioTransport: Transport {
+        private enum Command: Sendable {
+            case write(Data)
+            case terminate
         }
 
-        let proc = Process()
+        private struct LaunchConfiguration: Sendable {
+            let executable: StdioExecutable
+            let arguments: [String]
+            let workingDirectory: String?
+            let environment: [String: String]
+        }
 
-        // Resolve symlinks
-        let resolvedPath = (try? FileManager.default.destinationOfSymbolicLink(atPath: executablePath)) ?? executablePath
-        let actualPath = resolvedPath.hasPrefix("/") ? resolvedPath : ((executablePath as NSString).deletingLastPathComponent as NSString).appendingPathComponent(resolvedPath)
+        private let configuration: TransportConfiguration
+        private let environmentProvider: @Sendable () async -> [String: String]
+        private let logger = Logger.forCategory("StdioTransport")
+        private let messageStream: AsyncThrowingStream<Data, any Error>
+        private let messageContinuation: AsyncThrowingStream<Data, any Error>.Continuation
+        private let standardErrorStream: AsyncStream<String>
+        private let standardErrorContinuation: AsyncStream<String>.Continuation
 
-        // Check for Node.js scripts
-        let isNodeScript: Bool = {
-            guard let handle = FileHandle(forReadingAtPath: actualPath) else { return false }
-            defer { try? handle.close() }
-            guard let data = try? handle.read(upToCount: 64),
-                  let firstLine = String(data: data, encoding: .utf8) else { return false }
-            return firstLine.hasPrefix("#!/usr/bin/env node")
-        }()
+        private var launchConfiguration: LaunchConfiguration?
+        private var processTask: Task<Void, Never>?
+        private var commandContinuation: AsyncStream<Command>.Continuation?
+        private var connectContinuation: CheckedContinuation<Void, any Error>?
+        private var readBuffer = Data()
+        private var connected = false
+        private var closing = false
+        private var processID: Int32?
+        private var processGroupID: Int32?
 
-        if isNodeScript {
-            let searchPaths = [
-                (executablePath as NSString).deletingLastPathComponent,
-                (actualPath as NSString).deletingLastPathComponent,
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "/usr/bin"
-            ]
+        nonisolated public var messages: AsyncThrowingStream<Data, any Error> {
+            messageStream
+        }
 
-            var foundNode: String?
-            for searchPath in searchPaths {
-                let nodePath = (searchPath as NSString).appendingPathComponent("node")
-                if FileManager.default.fileExists(atPath: nodePath) {
-                    foundNode = nodePath
-                    break
+        public var isConnected: Bool {
+            connected
+        }
+
+        /// Complete stderr lines emitted by the subprocess.
+        nonisolated public var stderrLines: AsyncStream<String> {
+            standardErrorStream
+        }
+
+        public init(
+            configuration: TransportConfiguration = .default,
+            environmentProvider: @escaping @Sendable () async -> [String: String] = {
+                await ShellEnvironment.loadUserShellEnvironment()
+            }
+        ) {
+            self.configuration = configuration
+            self.environmentProvider = environmentProvider
+            (messageStream, messageContinuation) = AsyncThrowingStream.makeStream()
+            (standardErrorStream, standardErrorContinuation) = AsyncStream.makeStream()
+        }
+
+        public init(
+            executable: StdioExecutable,
+            arguments: [String] = [],
+            workingDirectory: String? = nil,
+            environment: [String: String] = [:],
+            configuration: TransportConfiguration = .default,
+            environmentProvider: @escaping @Sendable () async -> [String: String] = {
+                await ShellEnvironment.loadUserShellEnvironment()
+            }
+        ) {
+            self.configuration = configuration
+            self.environmentProvider = environmentProvider
+            launchConfiguration = LaunchConfiguration(
+                executable: executable,
+                arguments: arguments,
+                workingDirectory: workingDirectory,
+                environment: environment
+            )
+            (messageStream, messageContinuation) = AsyncThrowingStream.makeStream()
+            (standardErrorStream, standardErrorContinuation) = AsyncStream.makeStream()
+        }
+
+        public func launch(
+            executablePath: String,
+            arguments: [String] = [],
+            workingDirectory: String? = nil,
+            environment: [String: String]? = nil
+        ) async throws {
+            let executable: StdioExecutable =
+                executablePath.contains("/") ? .path(executablePath) : .name(executablePath)
+            try await launch(
+                executable: executable,
+                arguments: arguments,
+                workingDirectory: workingDirectory,
+                environment: environment ?? [:]
+            )
+        }
+
+        public func launch(
+            executable: StdioExecutable,
+            arguments: [String] = [],
+            workingDirectory: String? = nil,
+            environment: [String: String] = [:]
+        ) async throws {
+            guard processTask == nil, !connected else {
+                throw StdioTransportError.alreadyConnected
+            }
+            launchConfiguration = LaunchConfiguration(
+                executable: executable,
+                arguments: arguments,
+                workingDirectory: workingDirectory,
+                environment: environment
+            )
+            try await connect()
+        }
+
+        public func connect() async throws {
+            try Task.checkCancellation()
+            guard processTask == nil, !connected else {
+                throw StdioTransportError.alreadyConnected
+            }
+            guard let launchConfiguration else {
+                throw StdioTransportError.executableNotConfigured
+            }
+
+            closing = false
+            let (commands, continuation) = AsyncStream.makeStream(of: Command.self)
+            commandContinuation = continuation
+
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    connectContinuation = continuation
+                    processTask = Task { [weak self] in
+                        guard let self else { return }
+                        await self.runProcess(configuration: launchConfiguration, commands: commands)
+                    }
                 }
-            }
-
-            if let nodePath = foundNode {
-                proc.executableURL = URL(fileURLWithPath: nodePath)
-                proc.arguments = [actualPath] + arguments
-            } else {
-                proc.executableURL = URL(fileURLWithPath: executablePath)
-                proc.arguments = arguments
-            }
-        } else {
-            proc.executableURL = URL(fileURLWithPath: executablePath)
-            proc.arguments = arguments
-        }
-
-        // Set up environment
-        var env = ShellEnvironment.loadUserShellEnvironment()
-
-        if let customEnvironment = environment {
-            for (key, value) in customEnvironment {
-                env[key] = value
+                try Task.checkCancellation()
+            } onCancel: {
+                Task { await self.close() }
             }
         }
 
-        if let workingDirectory, !workingDirectory.isEmpty {
-            env["PWD"] = workingDirectory
-            env["OLDPWD"] = workingDirectory
-            proc.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
-        }
+        public func send(_ data: Data) throws {
+            guard connected, let commandContinuation else {
+                throw ClientError.processNotRunning
+            }
 
-        let agentDir = (executablePath as NSString).deletingLastPathComponent
-        if let existingPath = env["PATH"] {
-            env["PATH"] = "\(agentDir):\(existingPath)"
-        } else {
-            env["PATH"] = agentDir
-        }
-
-        proc.environment = env
-
-        // Set up pipes
-        let stdin = Pipe()
-        let stdout = Pipe()
-        let stderr = Pipe()
-
-        proc.standardInput = stdin
-        proc.standardOutput = stdout
-        proc.standardError = stderr
-
-        stdinPipe = stdin
-        stdoutPipe = stdout
-        stderrPipe = stderr
-
-        proc.terminationHandler = { [weak self] process in
-            Task {
-                await self?.handleTermination(exitCode: process.terminationStatus)
+            var line = data
+            line.append(0x0A)
+            guard case .enqueued = commandContinuation.yield(.write(line)) else {
+                throw ClientError.connectionClosed
             }
         }
 
-        try proc.run()
-        process = proc
-
-        startStdoutProcessing()
-        startReading()
-        startReadingStderr()
-    }
-
-    public func send(_ data: Data) async throws {
-        guard let stdin = stdinPipe?.fileHandleForWriting else {
-            throw ClientError.transportError("Transport not connected")
-        }
-
-        var lineData = data
-        lineData.append(0x0A) // newline
-
-        try stdin.write(contentsOf: lineData)
-    }
-
-    public func close() async {
-        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        stderrPipe?.fileHandleForReading.readabilityHandler = nil
-
-        try? stdinPipe?.fileHandleForWriting.close()
-        try? stdoutPipe?.fileHandleForReading.close()
-        try? stderrPipe?.fileHandleForReading.close()
-
-        await finishStdoutProcessing()
-
-        if let proc = process, proc.isRunning {
-            proc.terminate()
-        }
-
-        messageContinuation?.finish()
-
-        process = nil
-        stdinPipe = nil
-        stdoutPipe = nil
-        stderrPipe = nil
-        readBuffer.removeAll()
-    }
-
-    // MARK: - Private Methods
-
-    private func startStdoutProcessing() {
-        var continuation: AsyncStream<Data>.Continuation!
-        let stream = AsyncStream<Data>(bufferingPolicy: .unbounded) {
-            continuation = $0
-        }
-        stdoutContinuation = continuation
-        stdoutConsumerTask = Task { [weak self] in
-            for await data in stream {
-                guard let self else { return }
-                await self.processIncomingData(data)
-            }
-        }
-    }
-
-    private func startReading() {
-        guard let stdout = stdoutPipe?.fileHandleForReading,
-              let stdoutContinuation else { return }
-
-        stdout.readabilityHandler = { handle in
-            let data = handle.availableData
-
-            guard !data.isEmpty else {
-                handle.readabilityHandler = nil
+        public func close() async {
+            guard let processTask else {
+                finishStreams(throwing: nil)
                 return
             }
 
-            stdoutContinuation.yield(data)
+            closing = true
+            connected = false
+            commandContinuation?.yield(.terminate)
+            commandContinuation?.finish()
+            processTask.cancel()
+            await processTask.value
+            await removeRegisteredProcess()
+            self.processTask = nil
+            commandContinuation = nil
+            processID = nil
+            processGroupID = nil
+            finishStreams(throwing: nil)
+        }
+
+        public func processIdentifier() -> Int32? {
+            connected ? processID : nil
+        }
+
+        public func processGroupIdentifier() -> Int32? {
+            connected ? processGroupID : nil
         }
     }
 
-    private func startReadingStderr() {
-        guard let stderr = stderrPipe?.fileHandleForReading else { return }
-
-        stderr.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                handle.readabilityHandler = nil
-                return
-            }
-            // Discard stderr output
-        }
-    }
-
-    private func processIncomingData(_ data: Data) async {
-        readBuffer.append(data)
-        await drainBufferedMessages()
-    }
-
-    private func finishStdoutProcessing() async {
-        stdoutContinuation?.finish()
-        if let stdoutConsumerTask {
-            await stdoutConsumerTask.value
-        }
-        stdoutConsumerTask = nil
-        stdoutContinuation = nil
-    }
-
-    private func drainAndFinishStdout() async {
-        if let stdoutHandle = stdoutPipe?.fileHandleForReading {
-            stdoutHandle.readabilityHandler = nil
+    extension StdioTransport {
+        private func runProcess(
+            configuration: LaunchConfiguration,
+            commands: AsyncStream<Command>
+        ) async {
             do {
-                while let chunk = try stdoutHandle.read(upToCount: 65_536), !chunk.isEmpty {
-                    stdoutContinuation?.yield(chunk)
+                let environment = await processEnvironment(for: configuration)
+                let platformOptions = makePlatformOptions()
+                let result = try await Subprocess.run(
+                    configuration.executable.subprocessExecutable,
+                    arguments: Arguments(configuration.arguments),
+                    environment: .custom(environment.subprocessEnvironment),
+                    workingDirectory: configuration.workingDirectory.map { .init($0) },
+                    platformOptions: platformOptions,
+                    input: .inputWriter,
+                    output: .sequence,
+                    error: .sequence
+                ) { execution in
+                    await processDidLaunch(
+                        identifier: execution.processIdentifier.value,
+                        executable: configuration.executable.registryPath
+                    )
+
+                    try await withThrowingTaskGroup(of: Void.self) { group in
+                        group.addTask {
+                            for await command in commands {
+                                switch command {
+                                case .write(let data):
+                                    _ = try await execution.standardInputWriter.write(Array(data))
+                                case .terminate:
+                                    try await execution.standardInputWriter.finish()
+                                    await execution.teardown(using: platformOptions.teardownSequence)
+                                    return
+                                }
+                            }
+                            try await execution.standardInputWriter.finish()
+                        }
+                        group.addTask {
+                            for try await buffer in execution.standardOutput {
+                                let data = buffer.withUnsafeBytes { Data($0) }
+                                try await self.receiveStandardOutput(data)
+                            }
+                            await self.outputDidClose()
+                        }
+                        group.addTask {
+                            for try await line in execution.standardError.strings(
+                                bufferingPolicy: .maxLineLength(1_024 * 1_024)
+                            ) where !line.isEmpty {
+                                self.standardErrorContinuation.yield(line)
+                            }
+                        }
+                        try await group.waitForAll()
+                    }
                 }
+                await processDidExit(status: result.terminationStatus)
             } catch {
-                // The handle may already be closed by an explicit close.
+                await processDidFail(error)
             }
-            try? stdoutHandle.close()
         }
-        await finishStdoutProcessing()
+
+        private func processEnvironment(for configuration: LaunchConfiguration) async -> [String: String] {
+            var environment = await environmentProvider()
+            for (key, value) in configuration.environment {
+                environment[key] = value
+            }
+
+            if let workingDirectory = configuration.workingDirectory, !workingDirectory.isEmpty {
+                environment["PWD"] = workingDirectory
+                environment["OLDPWD"] = workingDirectory
+            }
+
+            if case .path(let path) = configuration.executable {
+                let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
+                if !directory.isEmpty {
+                    environment["PATH"] = [directory, environment["PATH"]]
+                        .compactMap { $0 }
+                        .joined(separator: ":")
+                }
+            }
+            return environment
+        }
+
+        private func makePlatformOptions() -> PlatformOptions {
+            var options = PlatformOptions()
+            options.createSession = true
+            options.teardownSequence.append(
+                .gracefulShutDown(
+                    toProcessGroup: true,
+                    allowedDurationToNextStep: .seconds(2)
+                )
+            )
+            return options
+        }
+
+        private func processDidLaunch(identifier: Int32, executable: String) async {
+            connected = true
+            processID = identifier
+            processGroupID = identifier
+            await ProcessRegistry.shared.recordProcess(
+                pid: identifier,
+                pgid: identifier,
+                agentPath: executable
+            )
+            connectContinuation?.resume()
+            connectContinuation = nil
+        }
+
+        private func processDidExit(status: TerminationStatus) async {
+            await removeRegisteredProcess()
+            processTask = nil
+            commandContinuation = nil
+            connected = false
+
+            guard !closing else {
+                finishStreams(throwing: nil)
+                return
+            }
+
+            switch status {
+            case .exited(0):
+                finishStreams(throwing: nil)
+            case .exited(let code):
+                finishStreams(throwing: StdioTransportError.processExited(code))
+            case .signaled(let signal):
+                finishStreams(throwing: StdioTransportError.processSignaled(signal))
+            }
+        }
+
+        private func processDidFail(_ error: any Error) async {
+            await removeRegisteredProcess()
+            if let connectContinuation {
+                self.connectContinuation = nil
+                connectContinuation.resume(throwing: error)
+            }
+            processTask = nil
+            commandContinuation = nil
+            connected = false
+            finishStreams(throwing: closing ? nil : error)
+        }
+
+        private func removeRegisteredProcess() async {
+            await ProcessRegistry.shared.removeProcess(pid: processID, pgid: processGroupID)
+        }
+
+        private func outputDidClose() {
+            commandContinuation?.finish()
+        }
+
+        private func finishStreams(throwing error: (any Error)?) {
+            if let error {
+                messageContinuation.finish(throwing: error)
+            } else {
+                messageContinuation.finish()
+            }
+            standardErrorContinuation.finish()
+        }
     }
 
-    private func drainBufferedMessages() async {
-        while let message = popNextMessage() {
-            messageContinuation?.yield(message)
+    extension StdioTransport {
+        private func receiveStandardOutput(_ data: Data) throws {
+            readBuffer.append(data)
+            while let message = popNextMessage() {
+                if configuration.maxMessageSize > 0, message.count > configuration.maxMessageSize {
+                    throw StdioTransportError.messageTooLarge(message.count)
+                }
+                messageContinuation.yield(message)
+            }
+            if configuration.maxMessageSize > 0, readBuffer.count > configuration.maxMessageSize {
+                throw StdioTransportError.messageTooLarge(readBuffer.count)
+            }
         }
-    }
 
-    private func popNextMessage() -> Data? {
-        let whitespace: Set<UInt8> = [0x20, 0x09, 0x0D, 0x0A]
+        private func popNextMessage() -> Data? {
+            let whitespace: Set<UInt8> = [0x20, 0x09, 0x0D, 0x0A]
 
-        while true {
-            while let first = readBuffer.first, whitespace.contains(first) {
-                readBuffer.removeFirst()
-            }
-
-            guard !readBuffer.isEmpty else {
-                return nil
-            }
-
-            guard let first = readBuffer.first else { return nil }
-
-            // Must start with { or [
-            if first != 0x7B && first != 0x5B {
-                if let newline = readBuffer.firstIndex(of: 0x0A) {
-                    let removeCount = readBuffer.distance(from: readBuffer.startIndex, to: newline) + 1
-                    readBuffer.removeFirst(min(removeCount, readBuffer.count))
+            while true {
+                while let first = readBuffer.first, whitespace.contains(first) {
+                    readBuffer.removeFirst()
+                }
+                guard let first = readBuffer.first else { return nil }
+                guard first == 0x7B || first == 0x5B else {
+                    guard discardLeadingNoise() else { return nil }
                     continue
                 }
 
-                if readBuffer.count > 4096 {
-                    readBuffer.removeAll(keepingCapacity: true)
+                let bytes = Array(readBuffer)
+                if let endIndex = completeMessageEnd(in: bytes) {
+                    let candidate = Data(bytes[0...endIndex])
+                    guard isValidJSONMessage(candidate) else {
+                        readBuffer.removeFirst()
+                        continue
+                    }
+                    readBuffer.removeFirst(endIndex + 1)
+                    return candidate
                 }
-                return nil
-            }
 
-            break
-        }
-
-        let bytes = Array(readBuffer)
-
-        var depth = 0
-        var inString = false
-        var escaped = false
-
-        for endIndex in 0..<bytes.count {
-            let byte = bytes[endIndex]
-
-            if inString {
-                if escaped {
-                    escaped = false
-                    continue
-                }
-                if byte == 0x5C { // backslash
-                    escaped = true
-                    continue
-                }
-                if byte == 0x22 { // quote
-                    inString = false
-                }
-                continue
-            }
-
-            if byte == 0x22 { // quote
-                inString = true
-                continue
-            }
-
-            if byte == 0x7B || byte == 0x5B { // { or [
-                depth += 1
-            } else if byte == 0x7D || byte == 0x5D { // } or ]
-                depth -= 1
-                if depth == 0 {
-                    let messageData = Data(bytes[0...endIndex])
-                    let removeCount = min(endIndex + 1, readBuffer.count)
-                    readBuffer.removeFirst(removeCount)
-                    return messageData
-                }
+                guard discardMalformedLine() else { return nil }
             }
         }
 
-        return nil
+        private func discardLeadingNoise() -> Bool {
+            if let jsonStart = readBuffer.firstIndex(where: { $0 == 0x7B || $0 == 0x5B }) {
+                let count = readBuffer.distance(from: readBuffer.startIndex, to: jsonStart)
+                readBuffer.removeFirst(count)
+                logger.debug("Discarded \(count) non-JSON stdout bytes")
+                return true
+            }
+            if let newline = readBuffer.firstIndex(of: 0x0A) {
+                let count = readBuffer.distance(from: readBuffer.startIndex, to: newline) + 1
+                readBuffer.removeFirst(count)
+                return true
+            }
+            if readBuffer.count > configuration.bufferSize {
+                readBuffer.removeAll(keepingCapacity: true)
+            }
+            return false
+        }
+
+        private func discardMalformedLine() -> Bool {
+            guard let newline = readBuffer.firstIndex(of: 0x0A) else { return false }
+            let line = Data(readBuffer.prefix(upTo: newline))
+            guard !line.isEmpty, !isValidJSONMessage(line) else { return false }
+            let count = readBuffer.distance(from: readBuffer.startIndex, to: newline) + 1
+            readBuffer.removeFirst(count)
+            logger.warning("Discarded a malformed JSON stdout line")
+            return true
+        }
+
+        private func completeMessageEnd(in bytes: [UInt8]) -> Int? {
+            var depth = 0
+            var isInsideString = false
+            var isEscaped = false
+
+            for endIndex in bytes.indices {
+                let byte = bytes[endIndex]
+                if isInsideString {
+                    if isEscaped {
+                        isEscaped = false
+                    } else if byte == 0x5C {
+                        isEscaped = true
+                    } else if byte == 0x22 {
+                        isInsideString = false
+                    }
+                    continue
+                }
+
+                if byte == 0x22 {
+                    isInsideString = true
+                } else if byte == 0x7B || byte == 0x5B {
+                    depth += 1
+                } else if byte == 0x7D || byte == 0x5D {
+                    depth -= 1
+                    if depth == 0 { return endIndex }
+                }
+            }
+            return nil
+        }
+
+        private func isValidJSONMessage(_ data: Data) -> Bool {
+            guard let object = try? JSONSerialization.jsonObject(with: data) else {
+                return false
+            }
+            return object is [String: Any] || object is [Any]
+        }
     }
 
-    private func handleTermination(exitCode: Int32) async {
-        await drainAndFinishStdout()
-        logger.info("Process terminated with exit code: \(exitCode)")
-        messageContinuation?.finish()
-        process = nil
-        stdinPipe = nil
-        stdoutPipe = nil
-        stderrPipe = nil
+    extension StdioExecutable {
+        fileprivate var subprocessExecutable: Subprocess.Executable {
+            switch self {
+            case .name(let name):
+                .name(name)
+            case .path(let path):
+                .path(.init(path))
+            }
+        }
+
+        fileprivate var registryPath: String {
+            switch self {
+            case .name(let name): name
+            case .path(let path): path
+            }
+        }
     }
-}
+
+    extension Dictionary where Key == String, Value == String {
+        fileprivate var subprocessEnvironment: [Subprocess.Environment.Key: String] {
+            reduce(into: [:]) { result, element in
+                guard let key = Subprocess.Environment.Key(rawValue: element.key) else { return }
+                result[key] = element.value
+            }
+        }
+    }
 #endif

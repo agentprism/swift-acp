@@ -162,16 +162,16 @@ final class ACPPerformanceTests: XCTestCase {
 
             try await client.launch(agentPath: mockAgentPath)
 
-            let notifications = await client.notifications
+            let notifications = client.notifications
 
             // Start listening task
             let listenTask = Task {
-                for await notification in notifications {
+                for try await notification in notifications {
                     if notification.method == "session/update" {
-                        receivedNotification = true
-                        break
+                        return true
                     }
                 }
+                return false
             }
 
             _ = try await client.initialize(capabilities: makeCapabilities(), timeout: 5.0)
@@ -179,8 +179,8 @@ final class ACPPerformanceTests: XCTestCase {
             // Wait for notification
             try await Task.sleep(nanoseconds: 200_000_000)
 
-            listenTask.cancel()
             await client.terminate()
+            receivedNotification = try await listenTask.value
         }()
 
         try await Task.sleep(nanoseconds: 100_000_000)

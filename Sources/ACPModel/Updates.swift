@@ -30,10 +30,16 @@ public struct SessionUpdateNotification: Codable, Sendable {
 public struct Cost: Codable, Sendable {
     public let amount: Double
     public let currency: String
+    public let _meta: [String: AnyCodable]?
 
-    public init(amount: Double, currency: String) {
+    public init(
+        amount: Double,
+        currency: String,
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.amount = amount
         self.currency = currency
+        self._meta = _meta
     }
 }
 
@@ -44,6 +50,7 @@ public struct Usage: Codable, Sendable {
     public let outputTokens: Int
     public let thoughtTokens: Int?
     public let totalTokens: Int
+    public let _meta: [String: AnyCodable]?
 
     public init(
         cachedReadTokens: Int? = nil,
@@ -51,7 +58,8 @@ public struct Usage: Codable, Sendable {
         inputTokens: Int,
         outputTokens: Int,
         thoughtTokens: Int? = nil,
-        totalTokens: Int
+        totalTokens: Int,
+        _meta: [String: AnyCodable]? = nil
     ) {
         self.cachedReadTokens = cachedReadTokens
         self.cachedWriteTokens = cachedWriteTokens
@@ -59,6 +67,7 @@ public struct Usage: Codable, Sendable {
         self.outputTokens = outputTokens
         self.thoughtTokens = thoughtTokens
         self.totalTokens = totalTokens
+        self._meta = _meta
     }
 }
 
@@ -199,6 +208,9 @@ public enum SessionUpdate: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case sessionUpdate
         case content
+        case availableCommands
+        case currentModeId
+        case configOptions
     }
 
     public init(from decoder: Decoder) throws {
@@ -231,13 +243,13 @@ public enum SessionUpdate: Codable, Sendable {
             let planRemoved = try PlanRemoved(from: decoder)
             self = .planRemoved(planRemoved)
         case "available_commands_update":
-            let commands = try decoder.container(keyedBy: AnyCodingKey.self).decode([AvailableCommand].self, forKey: AnyCodingKey(stringValue: "availableCommands")!)
+            let commands = try container.decode([AvailableCommand].self, forKey: .availableCommands)
             self = .availableCommandsUpdate(commands)
         case "current_mode_update":
-            let modeId = try decoder.container(keyedBy: AnyCodingKey.self).decode(String.self, forKey: AnyCodingKey(stringValue: "currentModeId")!)
+            let modeId = try container.decode(String.self, forKey: .currentModeId)
             self = .currentModeUpdate(modeId)
         case "config_option_update":
-            let configOptions = try decoder.container(keyedBy: AnyCodingKey.self).decode([SessionConfigOption].self, forKey: AnyCodingKey(stringValue: "configOptions")!)
+            let configOptions = try container.decode([SessionConfigOption].self, forKey: .configOptions)
             self = .configOptionUpdate(configOptions)
         case "session_info_update":
             let info = try SessionInfoUpdate(from: decoder)
@@ -246,7 +258,11 @@ public enum SessionUpdate: Codable, Sendable {
             let usage = try UsageUpdate(from: decoder)
             self = .usageUpdate(usage)
         default:
-            throw DecodingError.dataCorruptedError(forKey: .sessionUpdate, in: container, debugDescription: "Unknown session update type: \(updateType)")
+            throw DecodingError.dataCorruptedError(
+                forKey: .sessionUpdate,
+                in: container,
+                debugDescription: "Unknown session update type: \(updateType)"
+            )
         }
     }
 
@@ -280,16 +296,13 @@ public enum SessionUpdate: Codable, Sendable {
             try planRemoved.encode(to: encoder)
         case .availableCommandsUpdate(let commands):
             try container.encode("available_commands_update", forKey: .sessionUpdate)
-            var innerContainer = encoder.container(keyedBy: AnyCodingKey.self)
-            try innerContainer.encode(commands, forKey: AnyCodingKey(stringValue: "availableCommands")!)
+            try container.encode(commands, forKey: .availableCommands)
         case .currentModeUpdate(let modeId):
             try container.encode("current_mode_update", forKey: .sessionUpdate)
-            var innerContainer = encoder.container(keyedBy: AnyCodingKey.self)
-            try innerContainer.encode(modeId, forKey: AnyCodingKey(stringValue: "currentModeId")!)
+            try container.encode(modeId, forKey: .currentModeId)
         case .configOptionUpdate(let configOptions):
             try container.encode("config_option_update", forKey: .sessionUpdate)
-            var innerContainer = encoder.container(keyedBy: AnyCodingKey.self)
-            try innerContainer.encode(configOptions, forKey: AnyCodingKey(stringValue: "configOptions")!)
+            try container.encode(configOptions, forKey: .configOptions)
         case .sessionInfoUpdate(let info):
             try container.encode("session_info_update", forKey: .sessionUpdate)
             try info.encode(to: encoder)
@@ -428,8 +441,8 @@ extension SessionUpdate {
     public var content: AnyCodable? {
         switch self {
         case .userMessageChunk(let block),
-             .agentMessageChunk(let block),
-             .agentThoughtChunk(let block):
+            .agentMessageChunk(let block),
+            .agentThoughtChunk(let block):
             return AnyCodable(block.toDictionary())
         case .toolCall(let call):
             let blocks = call.content.map { $0.toDictionary() }

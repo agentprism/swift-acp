@@ -6,6 +6,8 @@
 - Follow `.swift-format` and the strict `.swiftlint.yml` configuration. Format changed Swift files with `swift format --in-place --configuration .swift-format <paths>`, then run `swift package --allow-writing-to-package-directory swiftlint --strict` before committing.
 - Do not add entries to `.swiftlint-baseline.json`. New and changed code must pass the configured rules; remove inherited baseline entries when the corresponding code is refactored.
 - Avoid deprecated APIs and do not introduce force unwraps, force tries, implicitly unwrapped optionals, or lint suppression comments.
+- Treat the root `schema.json` as the ACP model source of truth. Refresh it from `https://github.com/agentclientprotocol/agent-client-protocol/releases/latest/download/schema.json` before protocol-model updates.
+- Keep protocol extensions vendor-neutral: preserve `_meta` and support underscore-prefixed extension methods without embedding vendor-specific method names or payload semantics.
 - Keep tests behavioral and meaningful. Do not add tautological tests that merely repeat implementation logic or assert language/library behavior.
 
 ## Release Workflow

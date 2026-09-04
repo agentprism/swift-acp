@@ -39,17 +39,25 @@ public struct PermissionOption: Codable, Sendable {
     public let kind: String
     public let name: String
     public let optionId: String
+    public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
         case kind
         case name
         case optionId
+        case _meta
     }
 
-    public init(kind: String, name: String, optionId: String) {
+    public init(
+        kind: String,
+        name: String,
+        optionId: String,
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.kind = kind
         self.name = name
         self.optionId = optionId
+        self._meta = _meta
     }
 }
 
@@ -66,32 +74,42 @@ public enum PermissionDecision: String, Codable, Sendable {
 
 public struct RequestPermissionResponse: Codable, Sendable {
     public let outcome: PermissionOutcome
+    public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
         case outcome
+        case _meta
     }
 
-    public init(outcome: PermissionOutcome) {
+    public init(
+        outcome: PermissionOutcome,
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.outcome = outcome
+        self._meta = _meta
     }
 }
 
 public struct PermissionOutcome: Codable, Sendable {
     public let outcome: String
     public let optionId: String?
+    public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
         case outcome
         case optionId
+        case _meta
     }
 
-    public init(optionId: String) {
-        self.outcome = "selected"
+    public init(optionId: String, _meta: [String: AnyCodable]? = nil) {
+        outcome = "selected"
         self.optionId = optionId
+        self._meta = _meta
     }
 
-    public init(cancelled: Bool) {
-        self.outcome = "cancelled"
-        self.optionId = nil
+    public init(cancelled _: Bool, _meta: [String: AnyCodable]? = nil) {
+        outcome = "cancelled"
+        optionId = nil
+        self._meta = _meta
     }
 }

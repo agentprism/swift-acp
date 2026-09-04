@@ -148,7 +148,7 @@ public actor TerminalDelegate {
             process.currentDirectoryURL = URL(fileURLWithPath: cwd)
         }
 
-        var envDict = ShellEnvironment.loadUserShellEnvironment()
+        var envDict = await ShellEnvironment.loadUserShellEnvironment()
         if let envVars = env {
             for envVar in envVars {
                 envDict[envVar.name] = envVar.value

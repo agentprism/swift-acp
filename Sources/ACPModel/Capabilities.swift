@@ -12,7 +12,7 @@ import Foundation
 public struct ClientCapabilities: Codable, Sendable {
     public let fs: FileSystemCapabilities
     public let terminal: Bool
-    public let meta: [String: AnyCodable]?
+    public let _meta: [String: AnyCodable]?
     public let session: ClientSessionCapabilities?
     public let plan: PlanCapabilities?
     public let auth: AuthCapabilities?
@@ -33,7 +33,7 @@ public struct ClientCapabilities: Codable, Sendable {
     ) {
         self.fs = fs
         self.terminal = terminal
-        self.meta = meta
+        self._meta = meta
         self.session = session
         self.plan = plan
         self.auth = auth
@@ -42,10 +42,35 @@ public struct ClientCapabilities: Codable, Sendable {
         self.positionEncodings = positionEncodings
     }
 
+    public init(
+        fs: FileSystemCapabilities,
+        terminal: Bool,
+        _meta: [String: AnyCodable]?,
+        session: ClientSessionCapabilities? = nil,
+        plan: PlanCapabilities? = nil,
+        auth: AuthCapabilities? = nil,
+        elicitation: ElicitationCapabilities? = nil,
+        nes: ClientNesCapabilities? = nil,
+        positionEncodings: [PositionEncodingKind]? = nil
+    ) {
+        self.fs = fs
+        self.terminal = terminal
+        self._meta = _meta
+        self.session = session
+        self.plan = plan
+        self.auth = auth
+        self.elicitation = elicitation
+        self.nes = nes
+        self.positionEncodings = positionEncodings
+    }
+
+    @available(*, deprecated, renamed: "_meta")
+    public var meta: [String: AnyCodable]? { _meta }
+
     enum CodingKeys: String, CodingKey {
         case fs
         case terminal
-        case meta = "_meta"
+        case _meta
         case session
         case plan
         case auth
@@ -182,7 +207,9 @@ public struct PromptCapabilities: Codable, Sendable {
         case _meta
     }
 
-    public init(audio: Bool? = nil, embeddedContext: Bool? = nil, image: Bool? = nil, _meta: [String: AnyCodable]? = nil) {
+    public init(
+        audio: Bool? = nil, embeddedContext: Bool? = nil, image: Bool? = nil, _meta: [String: AnyCodable]? = nil
+    ) {
         self.audio = audio
         self.embeddedContext = embeddedContext
         self.image = image

@@ -5,9 +5,9 @@
 //  Agent runtime for building ACP-compliant agents (server mode)
 //
 
+import ACPModel
 import Foundation
 import os.log
-import ACPModel
 
 /// Protocol for handling agent operations
 public protocol AgentDelegate: AnyObject, Sendable {
@@ -224,7 +224,7 @@ public actor Agent {
     // MARK: - Public API
 
     /// Stream of incoming requests from the client
-    public nonisolated var requests: AsyncStream<AgentRequest> {
+    nonisolated public var requests: AsyncStream<AgentRequest> {
         requestStream
     }
 
@@ -237,11 +237,7 @@ public actor Agent {
         self.encoder.outputFormatting = [.withoutEscapingSlashes]
         self.decoder = JSONDecoder()
 
-        var continuation: AsyncStream<AgentRequest>.Continuation!
-        self.requestStream = AsyncStream { cont in
-            continuation = cont
-        }
-        self.requestContinuation = continuation
+        (requestStream, requestContinuation) = AsyncStream.makeStream()
     }
 
     public func setDelegate(_ delegate: AgentDelegate?) {
@@ -250,8 +246,12 @@ public actor Agent {
 
     /// Start processing incoming messages from the transport
     public func start() async {
-        for await data in transport.messages {
-            await handleMessage(data)
+        do {
+            for try await data in transport.messages {
+                await handleMessage(data)
+            }
+        } catch {
+            logger.error("Transport failed: \(error.localizedDescription)")
         }
         requestContinuation?.finish()
     }
@@ -333,7 +333,11 @@ public actor Agent {
     public func disconnectMcp(connectionId: McpConnectionId) async throws -> DisconnectMcpResponse {
         let request = DisconnectMcpRequest(connectionId: connectionId)
         let response = try await sendRequest(method: "mcp/disconnect", params: request)
-        return try decodeEmptyTolerantResponse(DisconnectMcpResponse.self, from: response, emptyValue: DisconnectMcpResponse())
+        return try decodeEmptyTolerantResponse(
+            DisconnectMcpResponse.self,
+            from: response,
+            emptyValue: DisconnectMcpResponse()
+        )
     }
 
     /// Request structured user input from the client.
@@ -359,7 +363,9 @@ public actor Agent {
         pendingRequests.removeAll()
         requestContinuation?.finish()
     }
+}
 
+extension Agent {
     // MARK: - Private Methods
 
     private func handleMessage(_ data: Data) async {
@@ -444,52 +450,51 @@ public actor Agent {
             let response = try await delegate.handleCloseSession(params)
             return try encodeResult(response)
 
+        default:
+            return try await routeExtensionRequest(request, delegate: delegate)
+        }
+    }
+
+    private func routeExtensionRequest(
+        _ request: JSONRPCRequest,
+        delegate: any AgentDelegate
+    ) async throws -> AnyCodable {
+        switch request.method {
         case "logout":
             let params = try decodeParamsIfPresent(LogoutRequest.self, from: request.params)
             let response = try await delegate.handleLogout(params)
             return try encodeResult(response)
-
         case "providers/list":
             let params = try decodeParamsIfPresent(ListProvidersRequest.self, from: request.params)
             let response = try await delegate.handleListProviders(params)
             return try encodeResult(response)
-
         case "providers/set":
             let params = try decodeParams(SetProviderRequest.self, from: request.params)
             let response = try await delegate.handleSetProvider(params)
             return try encodeResult(response)
-
         case "providers/disable":
             let params = try decodeParams(DisableProviderRequest.self, from: request.params)
             let response = try await delegate.handleDisableProvider(params)
             return try encodeResult(response)
-
         case "nes/start":
             let params = try decodeParamsIfPresent(StartNesRequest.self, from: request.params)
             let response = try await delegate.handleStartNes(params)
             return try encodeResult(response)
-
         case "nes/suggest":
             let params = try decodeParams(SuggestNesRequest.self, from: request.params)
             let response = try await delegate.handleSuggestNes(params)
             return try encodeResult(response)
-
         case "nes/close":
             let params = try decodeParams(CloseNesRequest.self, from: request.params)
             let response = try await delegate.handleCloseNes(params)
             return try encodeResult(response)
-
         case "mcp/message":
             let params = try decodeParams(MessageMcpRequest.self, from: request.params)
             return try await delegate.handleMcpMessage(params)
-
         default:
-            // Emit to request stream for custom handling
-            requestContinuation?.yield(AgentRequest(
-                id: request.id,
-                method: request.method,
-                params: request.params
-            ))
+            requestContinuation?.yield(
+                AgentRequest(id: request.id, method: request.method, params: request.params)
+            )
             throw ClientError.invalidResponse
         }
     }
@@ -497,16 +502,21 @@ public actor Agent {
     private func handleNotification(_ notification: JSONRPCNotification) async {
         switch notification.method {
         case "session/cancel":
-            if let params = notification.params,
-               let dict = params.value as? [String: Any],
-               let sessionIdValue = dict["sessionId"] as? String {
-                let sessionId = SessionId(sessionIdValue)
-                try? await delegate?.handleCancel(sessionId)
-            }
+            guard let params = notification.params else { return }
+            guard let dictionary = params.value as? [String: Any] else { return }
+            guard let sessionID = dictionary["sessionId"] as? String else { return }
+            try? await delegate?.handleCancel(SessionId(sessionID))
         case "$/cancel_request":
             if let request = try? decodeParams(CancelRequestNotification.self, from: notification.params) {
                 try? await delegate?.handleCancelRequest(request)
             }
+        default:
+            await handleExtensionNotification(notification)
+        }
+    }
+
+    private func handleExtensionNotification(_ notification: JSONRPCNotification) async {
+        switch notification.method {
         case "nes/accept":
             if let notification = try? decodeParams(AcceptNesNotification.self, from: notification.params) {
                 try? await delegate?.handleAcceptNes(notification)
@@ -515,6 +525,17 @@ public actor Agent {
             if let notification = try? decodeParams(RejectNesNotification.self, from: notification.params) {
                 try? await delegate?.handleRejectNes(notification)
             }
+        case "mcp/message":
+            if let notification = try? decodeParams(MessageMcpNotification.self, from: notification.params) {
+                try? await delegate?.handleMcpNotification(notification)
+            }
+        default:
+            await handleDocumentNotification(notification)
+        }
+    }
+
+    private func handleDocumentNotification(_ notification: JSONRPCNotification) async {
+        switch notification.method {
         case "document/didOpen":
             if let notification = try? decodeParams(DidOpenDocumentNotification.self, from: notification.params) {
                 try? await delegate?.handleDidOpenDocument(notification)
@@ -534,10 +555,6 @@ public actor Agent {
         case "document/didFocus":
             if let notification = try? decodeParams(DidFocusDocumentNotification.self, from: notification.params) {
                 try? await delegate?.handleDidFocusDocument(notification)
-            }
-        case "mcp/message":
-            if let notification = try? decodeParams(MessageMcpNotification.self, from: notification.params) {
-                try? await delegate?.handleMcpNotification(notification)
             }
         default:
             logger.debug("Unhandled notification: \(notification.method)")

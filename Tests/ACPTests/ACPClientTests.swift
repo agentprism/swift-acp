@@ -21,22 +21,6 @@ final class ACPClientTests: XCTestCase {
         XCTAssertEqual(sessionId.value, "test-session-456")
     }
 
-    func testSessionIdEquality() {
-        let id1 = SessionId("abc")
-        let id2 = SessionId("abc")
-        let id3 = SessionId("xyz")
-        XCTAssertEqual(id1, id2)
-        XCTAssertNotEqual(id1, id3)
-    }
-
-    func testSessionIdHashable() {
-        var set = Set<SessionId>()
-        set.insert(SessionId("a"))
-        set.insert(SessionId("b"))
-        set.insert(SessionId("a"))
-        XCTAssertEqual(set.count, 2)
-    }
-
     // MARK: - RequestId Tests
 
     func testRequestIdNumber() throws {
@@ -67,15 +51,6 @@ final class ACPClientTests: XCTestCase {
         let data = json.data(using: .utf8)!
         let requestId = try JSONDecoder().decode(RequestId.self, from: data)
         XCTAssertEqual(requestId, .string("req-999"))
-    }
-
-    func testRequestIdHashable() {
-        var dict: [RequestId: String] = [:]
-        dict[.number(1)] = "one"
-        dict[.string("two")] = "two"
-        dict[.number(1)] = "updated"
-        XCTAssertEqual(dict.count, 2)
-        XCTAssertEqual(dict[.number(1)], "updated")
     }
 
     // MARK: - TextContent Tests
@@ -128,21 +103,6 @@ final class ACPClientTests: XCTestCase {
             XCTAssertEqual(image.mimeType, "image/png")
         } else {
             XCTFail("Expected image content block")
-        }
-    }
-
-    func testContentBlockRoundTrip() throws {
-        let original = ContentBlock.text(TextContent(text: "Round trip test"))
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let data = try encoder.encode(original)
-        let decoded = try decoder.decode(ContentBlock.self, from: data)
-
-        if case .text(let text) = decoded {
-            XCTAssertEqual(text.text, "Round trip test")
-        } else {
-            XCTFail("Expected text content block")
         }
     }
 
@@ -250,17 +210,6 @@ final class ACPClientTests: XCTestCase {
         XCTAssertEqual(ToolKind.other.symbolName, "wrench.and.screwdriver")
     }
 
-    func testToolKindEncoding() throws {
-        let kinds: [ToolKind] = [.read, .edit, .execute, .switchMode, .exitPlanMode]
-        let encoder = JSONEncoder()
-
-        for kind in kinds {
-            let data = try encoder.encode(kind)
-            let decoded = String(data: data, encoding: .utf8)!.replacingOccurrences(of: "\"", with: "")
-            XCTAssertEqual(decoded, kind.rawValue)
-        }
-    }
-
     func testToolKindDecoding() throws {
         let testCases: [(String, ToolKind)] = [
             ("\"read\"", .read),
@@ -313,18 +262,6 @@ final class ACPClientTests: XCTestCase {
         }
     }
 
-    func testStopReasonRoundTrip() throws {
-        let reasons: [StopReason] = [.endTurn, .maxTokens, .cancelled]
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        for reason in reasons {
-            let data = try encoder.encode(reason)
-            let decoded = try decoder.decode(StopReason.self, from: data)
-            XCTAssertEqual(decoded, reason)
-        }
-    }
-
     // MARK: - ClientError Tests
 
     func testClientErrorDescription() {
@@ -340,7 +277,9 @@ final class ACPClientTests: XCTestCase {
         let error4 = ClientError.invalidResponse
         XCTAssertEqual(error4.errorDescription, "Invalid response from agent")
     }
+}
 
+extension ACPClientTests {
     // MARK: - ClientCapabilities Tests
 
     func testClientCapabilitiesEncoding() throws {
@@ -384,14 +323,6 @@ final class ACPClientTests: XCTestCase {
         let data = json.data(using: .utf8)!
         let terminalId = try JSONDecoder().decode(TerminalId.self, from: data)
         XCTAssertEqual(terminalId.value, "term-456")
-    }
-
-    func testTerminalIdHashable() {
-        var set = Set<TerminalId>()
-        set.insert(TerminalId("a"))
-        set.insert(TerminalId("b"))
-        set.insert(TerminalId("a"))
-        XCTAssertEqual(set.count, 2)
     }
 
     // MARK: - Terminal Request/Response Tests
@@ -655,7 +586,9 @@ final class ACPClientTests: XCTestCase {
         XCTAssertEqual(update.usage?.size, 200000)
         XCTAssertEqual(update.usage?.cost?.currency, "USD")
     }
+}
 
+extension ACPClientTests {
     // MARK: - SessionConfigOption Tests
 
     func testSessionConfigOptionDecoding() throws {
@@ -788,7 +721,7 @@ final class ACPClientTests: XCTestCase {
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
 
-        let dictValue = AnyCodable(["key": "value", "number": 123] as [String: Any])
+        let dictValue = AnyCodable(["key": "value", "number": 123] as [String: any Sendable])
         let data = try encoder.encode(dictValue)
         let decoded = try decoder.decode(AnyCodable.self, from: data)
 

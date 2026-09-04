@@ -39,7 +39,8 @@ public enum ToolCallContent: Codable, Sendable {
             if let text = try? container.decodeIfPresent(String.self, forKey: .content) {
                 self = .content(.text(TextContent(text: text)))
             } else {
-                throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown tool call content type: \(type)")
+                throw DecodingError.dataCorruptedError(
+                    forKey: .type, in: container, debugDescription: "Unknown tool call content type: \(type)")
             }
         }
     }
@@ -92,8 +93,9 @@ public enum ToolCallContent: Codable, Sendable {
 
     public func toDictionary() -> [String: any Sendable] {
         guard let data = try? JSONEncoder().encode(self),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let dict = object as? [String: any Sendable] else {
+            let object = try? JSONSerialization.jsonObject(with: data),
+            let dict = object as? [String: any Sendable]
+        else {
             return [:]
         }
         return dict
@@ -104,27 +106,36 @@ public struct ToolCallDiff: Codable, Sendable {
     public let path: String
     public let oldText: String?
     public let newText: String
+    public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
-        case path, oldText, newText
+        case path, oldText, newText, _meta
     }
 
-    public init(path: String, oldText: String? = nil, newText: String) {
+    public init(
+        path: String,
+        oldText: String? = nil,
+        newText: String,
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.path = path
         self.oldText = oldText
         self.newText = newText
+        self._meta = _meta
     }
 }
 
 public struct ToolCallTerminal: Codable, Sendable {
     public let terminalId: String
+    public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
-        case terminalId
+        case terminalId, _meta
     }
 
-    public init(terminalId: String) {
+    public init(terminalId: String, _meta: [String: AnyCodable]? = nil) {
         self.terminalId = terminalId
+        self._meta = _meta
     }
 }
 
@@ -139,6 +150,7 @@ public struct ToolCall: Codable, Identifiable, Sendable {
     public var locations: [ToolLocation]?
     public var rawInput: AnyCodable?
     public var rawOutput: AnyCodable?
+    public var _meta: [String: AnyCodable]?
     public var timestamp: Date = Date()
     public var iterationId: String?
     public var parentToolCallId: String?
@@ -150,6 +162,7 @@ public struct ToolCall: Codable, Identifiable, Sendable {
         case title, kind, status, content, locations
         case rawInput
         case rawOutput
+        case _meta
     }
 
     public var resolvedKind: ToolKind {
@@ -175,6 +188,7 @@ public struct ToolCall: Codable, Identifiable, Sendable {
         locations: [ToolLocation]? = nil,
         rawInput: AnyCodable? = nil,
         rawOutput: AnyCodable? = nil,
+        _meta: [String: AnyCodable]? = nil,
         timestamp: Date = Date(),
         iterationId: String? = nil,
         parentToolCallId: String? = nil
@@ -187,6 +201,7 @@ public struct ToolCall: Codable, Identifiable, Sendable {
         self.locations = locations
         self.rawInput = rawInput
         self.rawOutput = rawOutput
+        self._meta = _meta
         self.timestamp = timestamp
         self.iterationId = iterationId
         self.parentToolCallId = parentToolCallId
@@ -289,12 +304,20 @@ public struct CommandInputSpec: Codable, Sendable {
     public let hint: String?
     public let properties: [String: AnyCodable]?
     public let required: [String]?
+    public let _meta: [String: AnyCodable]?
 
-    public init(type: String? = nil, hint: String? = nil, properties: [String: AnyCodable]? = nil, required: [String]? = nil) {
+    public init(
+        type: String? = nil,
+        hint: String? = nil,
+        properties: [String: AnyCodable]? = nil,
+        required: [String]? = nil,
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.type = type
         self.hint = hint
         self.properties = properties
         self.required = required
+        self._meta = _meta
     }
 }
 
@@ -325,13 +348,14 @@ public struct PlanEntry: Codable, Equatable, Sendable {
     }
 
     public static func == (lhs: PlanEntry, rhs: PlanEntry) -> Bool {
-        lhs.content == rhs.content &&
-        lhs.priority == rhs.priority &&
-        lhs.status == rhs.status &&
-        lhs.activeForm == rhs.activeForm
+        lhs.content == rhs.content && lhs.priority == rhs.priority && lhs.status == rhs.status
+            && lhs.activeForm == rhs.activeForm
     }
 
-    public init(content: String, priority: PlanPriority, status: PlanEntryStatus, activeForm: String? = nil, _meta: [String: AnyCodable]? = nil) {
+    public init(
+        content: String, priority: PlanPriority, status: PlanEntryStatus, activeForm: String? = nil,
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.content = content
         self.priority = priority
         self.status = status
@@ -383,7 +407,8 @@ public struct PlanItems: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        planId = try container.decodeIfPresent(PlanId.self, forKey: .planId)
+        planId =
+            try container.decodeIfPresent(PlanId.self, forKey: .planId)
             ?? container.decode(PlanId.self, forKey: .id)
         entries = try container.decode([PlanEntry].self, forKey: .entries)
         _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
@@ -417,7 +442,8 @@ public struct PlanFile: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        planId = try container.decodeIfPresent(PlanId.self, forKey: .planId)
+        planId =
+            try container.decodeIfPresent(PlanId.self, forKey: .planId)
             ?? container.decode(PlanId.self, forKey: .id)
         uri = try container.decode(String.self, forKey: .uri)
         _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
@@ -451,7 +477,8 @@ public struct PlanMarkdown: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        planId = try container.decodeIfPresent(PlanId.self, forKey: .planId)
+        planId =
+            try container.decodeIfPresent(PlanId.self, forKey: .planId)
             ?? container.decode(PlanId.self, forKey: .id)
         content = try container.decode(String.self, forKey: .content)
         _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
@@ -486,7 +513,8 @@ public enum PlanUpdateContent: Codable, Sendable {
         case "markdown":
             self = .markdown(try PlanMarkdown(from: decoder))
         default:
-            throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown plan update type: \(type)")
+            throw DecodingError.dataCorruptedError(
+                forKey: .type, in: container, debugDescription: "Unknown plan update type: \(type)")
         }
     }
 
@@ -534,7 +562,8 @@ public struct PlanRemoved: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        planId = try container.decodeIfPresent(PlanId.self, forKey: .planId)
+        planId =
+            try container.decodeIfPresent(PlanId.self, forKey: .planId)
             ?? container.decode(PlanId.self, forKey: .id)
         _meta = try container.decodeIfPresent([String: AnyCodable].self, forKey: ._meta)
     }

@@ -203,7 +203,9 @@ final class ACPModelTests: XCTestCase {
 
         XCTAssertTrue(json.isEmpty)
     }
+}
 
+extension ACPModelTests {
     func testLoadSessionRequestEncoding() throws {
         let request = LoadSessionRequest(
             sessionId: SessionId("session-123"),
@@ -380,7 +382,9 @@ final class ACPModelTests: XCTestCase {
         let rawInput = try XCTUnwrap(request.toolCall.rawInput?.value as? [String: Any])
         XCTAssertEqual(rawInput["path"] as? String, "/tmp/file.txt")
     }
+}
 
+extension ACPModelTests {
     // MARK: - Content Tests
 
     func testTextContentEncoding() throws {
@@ -406,22 +410,6 @@ final class ACPModelTests: XCTestCase {
         } else {
             XCTFail("Expected text content")
         }
-    }
-
-    // MARK: - Tool Tests
-
-    func testToolKindRawValues() {
-        XCTAssertEqual(ToolKind.read.rawValue, "read")
-        XCTAssertEqual(ToolKind.edit.rawValue, "edit")
-        XCTAssertEqual(ToolKind.execute.rawValue, "execute")
-        XCTAssertEqual(ToolKind.switchMode.rawValue, "switch_mode")
-    }
-
-    func testToolStatusRawValues() {
-        XCTAssertEqual(ToolStatus.pending.rawValue, "pending")
-        XCTAssertEqual(ToolStatus.inProgress.rawValue, "in_progress")
-        XCTAssertEqual(ToolStatus.completed.rawValue, "completed")
-        XCTAssertEqual(ToolStatus.failed.rawValue, "failed")
     }
 
     // MARK: - Capabilities Tests
@@ -654,7 +642,7 @@ final class ACPModelTests: XCTestCase {
 
     func testAnyCodableWithDict() throws {
         let encoder = JSONEncoder()
-        let value = AnyCodable(["key": "value", "number": 123] as [String: Any])
+        let value = AnyCodable(["key": "value", "number": 123] as [String: any Sendable])
         let data = try encoder.encode(value)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
 

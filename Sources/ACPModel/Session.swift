@@ -79,26 +79,50 @@ public struct ModeInfo: Codable, Hashable, Sendable {
     public let id: String
     public let name: String
     public let description: String?
+    public let _meta: [String: AnyCodable]?
 
-    public init(id: String, name: String, description: String? = nil) {
+    public init(
+        id: String,
+        name: String,
+        description: String? = nil,
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.id = id
         self.name = name
         self.description = description
+        self._meta = _meta
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.description == rhs.description
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(description)
     }
 }
 
 public struct ModesInfo: Codable, Sendable {
     public let currentModeId: String
     public let availableModes: [ModeInfo]
+    public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
         case currentModeId = "currentModeId"
         case availableModes = "availableModes"
+        case _meta
     }
 
-    public init(currentModeId: String, availableModes: [ModeInfo]) {
+    public init(
+        currentModeId: String,
+        availableModes: [ModeInfo],
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.currentModeId = currentModeId
         self.availableModes = availableModes
+        self._meta = _meta
     }
 }
 
@@ -108,32 +132,57 @@ public struct ModelInfo: Codable, Hashable, Sendable {
     public let modelId: String
     public let name: String
     public let description: String?
+    public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
         case modelId = "modelId"
         case name
         case description
+        case _meta
     }
 
-    public init(modelId: String, name: String, description: String? = nil) {
+    public init(
+        modelId: String,
+        name: String,
+        description: String? = nil,
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.modelId = modelId
         self.name = name
         self.description = description
+        self._meta = _meta
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.modelId == rhs.modelId && lhs.name == rhs.name && lhs.description == rhs.description
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(modelId)
+        hasher.combine(name)
+        hasher.combine(description)
     }
 }
 
 public struct ModelsInfo: Codable, Sendable {
     public let currentModelId: String
     public let availableModels: [ModelInfo]
+    public let _meta: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
         case currentModelId = "currentModelId"
         case availableModels = "availableModels"
+        case _meta
     }
 
-    public init(currentModelId: String, availableModels: [ModelInfo]) {
+    public init(
+        currentModelId: String,
+        availableModels: [ModelInfo],
+        _meta: [String: AnyCodable]? = nil
+    ) {
         self.currentModelId = currentModelId
         self.availableModels = availableModels
+        self._meta = _meta
     }
 }
 
@@ -206,7 +255,11 @@ public enum MCPServerConfig: Codable, Sendable {
         case "acp":
             self = .acp(try MCPAcpServerConfig(from: decoder))
         default:
-            throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown MCP server type: \(type)")
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "Unknown MCP server type: \(type)"
+            )
         }
     }
 

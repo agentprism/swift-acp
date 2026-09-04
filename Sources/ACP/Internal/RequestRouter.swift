@@ -5,8 +5,8 @@
 //  Routes incoming ACP requests to appropriate handlers
 //
 
-import Foundation
 import ACPModel
+import Foundation
 
 actor ACPRequestRouter {
     // MARK: - Properties
@@ -14,7 +14,8 @@ actor ACPRequestRouter {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    weak var delegate: ClientDelegate?
+    weak var delegate: (any ClientDelegate)?
+    weak var permissionDelegate: (any ClientPermissionDelegate)?
 
     // MARK: - Initialization
 
@@ -25,8 +26,13 @@ actor ACPRequestRouter {
 
     // MARK: - Delegate Management
 
-    func setDelegate(_ delegate: ClientDelegate?) {
+    func setDelegate(_ delegate: (any ClientDelegate)?) {
         self.delegate = delegate
+        permissionDelegate = delegate
+    }
+
+    func setPermissionDelegate(_ delegate: (any ClientPermissionDelegate)?) {
+        permissionDelegate = delegate
     }
 
     // MARK: - Request Routing
@@ -124,7 +130,8 @@ actor ACPRequestRouter {
         let data = try encoder.encode(params)
         let req = try decoder.decode(WriteTextFileRequest.self, from: data)
 
-        let response = try await delegate.handleFileWriteRequest(req.path, content: req.content, sessionId: req.sessionId)
+        let response = try await delegate.handleFileWriteRequest(
+            req.path, content: req.content, sessionId: req.sessionId)
 
         let responseData = try encoder.encode(response)
         return try decoder.decode(AnyCodable.self, from: responseData)
@@ -185,7 +192,8 @@ actor ACPRequestRouter {
         let data = try encoder.encode(params)
         let req = try decoder.decode(WaitForExitRequest.self, from: data)
 
-        let response = try await delegate.handleTerminalWaitForExit(terminalId: req.terminalId, sessionId: req.sessionId)
+        let response = try await delegate.handleTerminalWaitForExit(
+            terminalId: req.terminalId, sessionId: req.sessionId)
 
         let responseData = try encoder.encode(response)
         return try decoder.decode(AnyCodable.self, from: responseData)
@@ -228,7 +236,7 @@ actor ACPRequestRouter {
     }
 
     private func handlePermissionRequestMethod(_ request: JSONRPCRequest) async throws -> AnyCodable {
-        guard let delegate = delegate else {
+        guard let delegate = permissionDelegate else {
             throw ClientError.delegateNotSet
         }
 

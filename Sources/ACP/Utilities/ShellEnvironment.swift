@@ -2,183 +2,95 @@
 //  ShellEnvironment.swift
 //  ACP
 //
-//  Shell environment loading utility
+//  Login-shell environment loading backed by swift-subprocess.
 //
 
 #if os(macOS)
-import Foundation
-import os.log
+    import Foundation
+    import Subprocess
 
-public enum ShellEnvironment: Sendable {
-    private static let cacheLock = NSLock()
-    private static let cacheCondition = NSCondition()
-    private static var cachedEnvironment: [String: String]?
-    private static var isLoading = false
-
-    /// Get user's shell environment (cached after first load)
-    /// Warning: On main thread, returns immediately with potentially incomplete environment.
-    /// Use `loadUserShellEnvironmentAsync()` for guaranteed complete environment.
-    public static func loadUserShellEnvironment() -> [String: String] {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-
-        if let cached = cachedEnvironment {
-            return cached
+    public enum ShellEnvironment: Sendable {
+        /// Returns the user's login-shell environment, cached after the first load.
+        public static func loadUserShellEnvironment() async -> [String: String] {
+            await ShellEnvironmentCache.shared.values()
         }
 
-        if Thread.isMainThread {
-            DispatchQueue.global(qos: .utility).async {
-                _ = loadUserShellEnvironment()
-            }
-            return ProcessInfo.processInfo.environment
+        /// Compatibility spelling for the asynchronous environment loader.
+        public static func loadUserShellEnvironmentAsync() async -> [String: String] {
+            await loadUserShellEnvironment()
         }
 
-        let env = loadEnvironmentFromShell()
-        cachedEnvironment = env
-
-        cacheCondition.lock()
-        cacheCondition.broadcast()
-        cacheCondition.unlock()
-
-        return env
-    }
-
-    /// Async version that guarantees the full user shell environment is loaded.
-    /// Safe to call from any context (main thread, actors, etc.)
-    public static func loadUserShellEnvironmentAsync() async -> [String: String] {
-        if let cached = cachedEnvironmentSnapshot() {
-            return cached
-        }
-
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let env = loadUserShellEnvironmentBlocking()
-                continuation.resume(returning: env)
+        /// Starts loading the login-shell environment without blocking the caller.
+        public static func preloadEnvironment() {
+            Task {
+                _ = await loadUserShellEnvironment()
             }
         }
-    }
 
-    private static func cachedEnvironmentSnapshot() -> [String: String]? {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-        return cachedEnvironment
-    }
-
-    /// Blocking version that waits for environment to be loaded.
-    /// Do NOT call from main thread - use loadUserShellEnvironmentAsync() instead.
-    public static func loadUserShellEnvironmentBlocking() -> [String: String] {
-        cacheLock.lock()
-
-        if let cached = cachedEnvironment {
-            cacheLock.unlock()
-            return cached
+        /// Clears and reloads the cached login-shell environment.
+        public static func reloadEnvironment() async {
+            await ShellEnvironmentCache.shared.reload()
         }
+    }
 
-        if isLoading {
-            cacheLock.unlock()
+    private actor ShellEnvironmentCache {
+        static let shared = ShellEnvironmentCache()
 
-            cacheCondition.lock()
-            while cachedEnvironment == nil {
-                cacheCondition.wait()
+        private var cachedEnvironment: [String: String]?
+
+        func values() async -> [String: String] {
+            if let cachedEnvironment {
+                return cachedEnvironment
             }
-            let env = cachedEnvironment!
-            cacheCondition.unlock()
-            return env
+
+            let environment = await loadEnvironmentFromShell()
+            cachedEnvironment = environment
+            return environment
         }
 
-        isLoading = true
-        cacheLock.unlock()
-
-        let env = loadEnvironmentFromShell()
-
-        cacheLock.lock()
-        cachedEnvironment = env
-        isLoading = false
-        cacheLock.unlock()
-
-        cacheCondition.lock()
-        cacheCondition.broadcast()
-        cacheCondition.unlock()
-
-        return env
-    }
-
-    /// Preload environment in background (call at app launch)
-    public static func preloadEnvironment() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            _ = loadUserShellEnvironment()
-        }
-    }
-
-    /// Force reload of environment (e.g., after user changes shell config)
-    public static func reloadEnvironment() {
-        cacheLock.lock()
-        cachedEnvironment = nil
-        cacheLock.unlock()
-        preloadEnvironment()
-    }
-
-    private static func loadEnvironmentFromShell() -> [String: String] {
-        let shell = getLoginShell()
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: shell)
-
-        let shellName = (shell as NSString).lastPathComponent
-        let arguments: [String]
-        switch shellName {
-        case "fish":
-            arguments = ["-l", "-c", "env"]
-        case "zsh", "bash":
-            arguments = ["-l", "-i", "-c", "env"]
-        case "sh":
-            arguments = ["-l", "-c", "env"]
-        default:
-            arguments = ["-c", "env"]
+        func reload() async {
+            cachedEnvironment = nil
+            _ = await values()
         }
 
-        process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: homeDir)
+        private func loadEnvironmentFromShell() async -> [String: String] {
+            let inheritedEnvironment = ProcessInfo.processInfo.environment
+            let shell = inheritedEnvironment["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
+            let shellName = URL(fileURLWithPath: shell).lastPathComponent
+            let arguments: [String]
+            switch shellName {
+            case "fish":
+                arguments = ["-l", "-c", "env"]
+            case "zsh", "bash":
+                arguments = ["-l", "-i", "-c", "env"]
+            case "sh":
+                arguments = ["-l", "-c", "env"]
+            default:
+                arguments = ["-c", "env"]
+            }
 
-        let pipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = errorPipe
-
-        var shellEnv: [String: String] = [:]
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
-            try? pipe.fileHandleForReading.close()
-            try? errorPipe.fileHandleForReading.close()
-            if let output = String(data: data, encoding: .utf8) {
-                for line in output.split(separator: "\n") {
-                    if let equalsIndex = line.firstIndex(of: "=") {
-                        let key = String(line[..<equalsIndex])
-                        let value = String(line[line.index(after: equalsIndex)...])
-                        shellEnv[key] = value
-                    }
+            do {
+                let result = try await Subprocess.run(
+                    .path(.init(shell)),
+                    arguments: Arguments(arguments),
+                    environment: .inherit,
+                    workingDirectory: .init(FileManager.default.homeDirectoryForCurrentUser.path),
+                    output: .string(limit: 1_024 * 1_024),
+                    error: .discarded
+                )
+                guard result.terminationStatus.isSuccess else {
+                    return inheritedEnvironment
                 }
+
+                var environment: [String: String] = [:]
+                for line in result.standardOutput.split(separator: "\n") {
+                    guard let separator = line.firstIndex(of: "=") else { continue }
+                    environment[String(line[..<separator])] = String(line[line.index(after: separator)...])
+                }
+                return environment.isEmpty ? inheritedEnvironment : environment
+            } catch {
+                return inheritedEnvironment
             }
-        } catch {
-            try? pipe.fileHandleForReading.close()
-            try? errorPipe.fileHandleForReading.close()
-            return ProcessInfo.processInfo.environment
         }
-
-        return shellEnv.isEmpty ? ProcessInfo.processInfo.environment : shellEnv
     }
-
-    private static func getLoginShell() -> String {
-        if let shell = ProcessInfo.processInfo.environment["SHELL"], !shell.isEmpty {
-            return shell
-        }
-
-        return "/bin/zsh"
-    }
-}
 #endif

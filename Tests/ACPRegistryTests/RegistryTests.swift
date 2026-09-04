@@ -99,8 +99,7 @@ final class RegistryTests: XCTestCase {
                         "uvx": {"package": "agent2"}
                     }
                 }
-            ],
-            "extensions": []
+            ]
         }
         """
 

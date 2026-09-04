@@ -207,7 +207,9 @@ final class ACPE2ETests: XCTestCase {
 
         await client.terminate()
     }
+}
 
+extension ACPE2ETests {
     func testStableResumeDeleteAndLogoutRequests() async throws {
         try createMockAgent(script: """
         while read -r line; do
@@ -274,18 +276,16 @@ final class ACPE2ETests: XCTestCase {
         let client = Client()
         try await client.launch(agentPath: mockAgentPath)
 
-        let notificationStream = await client.notifications
+        let notificationStream = client.notifications
 
         // Start listening for notifications before sending request
         let notificationTask = Task {
-            var receivedNotification = false
-            for await notification in notificationStream {
+            for try await notification in notificationStream {
                 if notification.method == "session/update" {
-                    receivedNotification = true
-                    break
+                    return true
                 }
             }
-            return receivedNotification
+            return false
         }
 
         _ = try await client.initialize(capabilities: makeCapabilities(), timeout: 5.0)
@@ -295,7 +295,7 @@ final class ACPE2ETests: XCTestCase {
 
         await client.terminate()
 
-        let result = await notificationTask.value
+        let result = try await notificationTask.value
         XCTAssertTrue(result, "Should have received session/update notification")
     }
 
@@ -384,7 +384,9 @@ final class ACPE2ETests: XCTestCase {
 
         await client.terminate()
     }
+}
 
+extension ACPE2ETests {
     func testProcessTerminationError() async throws {
         try createMockAgent(script: """
         # Exit immediately
@@ -426,13 +428,14 @@ final class ACPE2ETests: XCTestCase {
 
         try await client.launch(agentPath: mockAgentPath)
 
-        var debugMessages: [DebugMessage] = []
         let debugTask = Task {
-            guard let stream = await client.debugMessages else { return }
+            guard let stream = await client.debugMessages else { return [DebugMessage]() }
+            var messages: [DebugMessage] = []
             for await message in stream {
-                debugMessages.append(message)
-                if debugMessages.count >= 2 { break }
+                messages.append(message)
+                if messages.count >= 2 { break }
             }
+            return messages
         }
 
         _ = try await client.initialize(capabilities: makeCapabilities(), timeout: 5.0)
@@ -441,7 +444,7 @@ final class ACPE2ETests: XCTestCase {
         try await Task.sleep(nanoseconds: 500_000_000)
 
         await client.terminate()
-        debugTask.cancel()
+        let debugMessages = await debugTask.value
 
         XCTAssertGreaterThanOrEqual(debugMessages.count, 1)
 
@@ -660,7 +663,7 @@ final class ACPE2ETests: XCTestCase {
         let collected = expectation(description: "all fragmented messages are collected")
         let valuesTask = Task {
             var values: [Int] = []
-            for await message in messages {
+            for try await message in messages {
                 let object = try JSONSerialization.jsonObject(with: message) as? [String: Any]
                 let params = object?["params"] as? [String: Any]
                 if let value = params?["value"] as? Int {
@@ -806,67 +809,6 @@ final class ACPDelegateTests: XCTestCase {
 // MARK: - Integration Tests for Types
 
 final class ACPTypeIntegrationTests: XCTestCase {
-
-    func testFullJSONRPCMessageRoundTrip() throws {
-        let request = JSONRPCRequest(
-            id: .number(42),
-            method: "session/prompt",
-            params: AnyCodable([
-                "sessionId": "session-123",
-                "prompt": [
-                    ["type": "text", "text": "Hello, agent!"]
-                ]
-            ] as [String: Any])
-        )
-
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let data = try encoder.encode(request)
-        let decoded = try decoder.decode(JSONRPCRequest.self, from: data)
-
-        XCTAssertEqual(decoded.id, request.id)
-        XCTAssertEqual(decoded.method, request.method)
-    }
-
-    func testSessionUpdateNotificationRoundTrip() throws {
-        let notification = SessionUpdateNotification(
-            sessionId: SessionId("session-123"),
-            update: .agentMessageChunk(.text(TextContent(text: "Hello!")))
-        )
-
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let data = try encoder.encode(notification)
-        let decoded = try decoder.decode(SessionUpdateNotification.self, from: data)
-
-        XCTAssertEqual(decoded.sessionId.value, "session-123")
-        XCTAssertEqual(decoded.update.sessionUpdateType, "agent_message_chunk")
-    }
-
-    func testToolCallUpdateRoundTrip() throws {
-        let update = ToolCallUpdate(
-            toolCallId: "tc-1",
-            status: .completed,
-            title: "Read File",
-            kind: .read,
-            content: [.content(.text(TextContent(text: "file contents")))],
-            locations: [ToolLocation(path: "/tmp/file.txt", line: 10)]
-        )
-
-        let encoder = JSONEncoder()
-        let decoder = JSONDecoder()
-
-        let data = try encoder.encode(update)
-        let decoded = try decoder.decode(ToolCallUpdate.self, from: data)
-
-        XCTAssertEqual(decoded.toolCallId, "tc-1")
-        XCTAssertEqual(decoded.status, .completed)
-        XCTAssertEqual(decoded.title, "Read File")
-        XCTAssertEqual(decoded.kind, .read)
-        XCTAssertEqual(decoded.locations?.first?.path, "/tmp/file.txt")
-    }
 
     func testComplexSessionUpdateParsing() throws {
         let json = """

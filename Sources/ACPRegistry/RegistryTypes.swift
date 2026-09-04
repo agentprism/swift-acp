@@ -19,6 +19,13 @@ public struct Registry: Codable, Sendable {
         self.agents = agents
         self.extensions = extensions
     }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(String.self, forKey: .version)
+        agents = try container.decode([RegistryAgent].self, forKey: .agents)
+        extensions = try container.decodeIfPresent([RegistryAgent].self, forKey: .extensions) ?? []
+    }
 }
 
 // MARK: - Agent
@@ -173,21 +180,21 @@ public struct Platform: Sendable, Hashable {
     /// Detects the current platform
     public static var current: Platform {
         #if os(macOS)
-        let os = OS.darwin
+            let os = OS.darwin
         #elseif os(Linux)
-        let os = OS.linux
+            let os = OS.linux
         #elseif os(Windows)
-        let os = OS.windows
+            let os = OS.windows
         #else
-        let os = OS.darwin // fallback
+            let os = OS.darwin  // fallback
         #endif
 
         #if arch(arm64)
-        let arch = Architecture.aarch64
+            let arch = Architecture.aarch64
         #elseif arch(x86_64)
-        let arch = Architecture.x86_64
+            let arch = Architecture.x86_64
         #else
-        let arch = Architecture.aarch64 // fallback
+            let arch = Architecture.aarch64  // fallback
         #endif
 
         return Platform(os: os, arch: arch)

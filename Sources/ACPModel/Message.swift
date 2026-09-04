@@ -152,6 +152,18 @@ public struct AnyCodable: Codable, Sendable {
         self.value = value
     }
 
+    /// Converts an encodable value into its JSON-compatible representation.
+    public init<Value: Encodable & Sendable>(encoding value: Value) throws {
+        let data = try JSONEncoder().encode(value)
+        self = try JSONDecoder().decode(Self.self, from: data)
+    }
+
+    /// Decodes the stored JSON-compatible value as a concrete type.
+    public func decode<Value: Decodable>(_ type: Value.Type) throws -> Value {
+        let data = try JSONEncoder().encode(self)
+        return try JSONDecoder().decode(type, from: data)
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
 
@@ -159,13 +171,15 @@ public struct AnyCodable: Codable, Sendable {
             value = bool
         } else if let int = try? container.decode(Int.self) {
             value = int
+        } else if let uint = try? container.decode(UInt64.self) {
+            value = uint
         } else if let double = try? container.decode(Double.self) {
             value = double
         } else if let string = try? container.decode(String.self) {
             value = string
-        } else if let array = try? container.decode([AnyCodable].self) {
+        } else if let array = try? container.decode([Self].self) {
             value = array.map { $0.value }
-        } else if let dict = try? container.decode([String: AnyCodable].self) {
+        } else if let dict = try? container.decode([String: Self].self) {
             value = dict.mapValues { $0.value }
         } else {
             value = NSNull()
@@ -176,23 +190,82 @@ public struct AnyCodable: Codable, Sendable {
         var container = encoder.singleValueContainer()
 
         switch value {
+        case let value as Self:
+            try value.encode(to: encoder)
         case let bool as Bool:
             try container.encode(bool)
-        case let int as Int:
-            try container.encode(int)
-        case let double as Double:
-            try container.encode(double)
         case let string as String:
             try container.encode(string)
+        case let array as [Self]:
+            try container.encode(array)
+        case let dictionary as [String: Self]:
+            try container.encode(dictionary)
         case let array as [any Sendable]:
-            try container.encode(array.map { AnyCodable($0) })
-        case let dict as [String: any Sendable]:
-            try container.encode(dict.mapValues { AnyCodable($0) })
+            try container.encode(array.map(Self.init))
+        case let dictionary as [String: any Sendable]:
+            try container.encode(dictionary.mapValues(Self.init))
         case is NSNull:
             try container.encodeNil()
         default:
-            try container.encodeNil()
+            if try encodeSignedInteger(to: encoder) { return }
+            if try encodeUnsignedInteger(to: encoder) { return }
+            if try encodeFloatingPoint(to: encoder) { return }
+            throw EncodingError.invalidValue(
+                value,
+                EncodingError.Context(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "AnyCodable cannot encode \(String(describing: type(of: value))) directly"
+                )
+            )
         }
+    }
+
+    private func encodeSignedInteger(to encoder: Encoder) throws -> Bool {
+        var container = encoder.singleValueContainer()
+        if let value = value as? Int {
+            try container.encode(value)
+        } else if let value = value as? Int8 {
+            try container.encode(value)
+        } else if let value = value as? Int16 {
+            try container.encode(value)
+        } else if let value = value as? Int32 {
+            try container.encode(value)
+        } else if let value = value as? Int64 {
+            try container.encode(value)
+        } else {
+            return false
+        }
+        return true
+    }
+
+    private func encodeUnsignedInteger(to encoder: Encoder) throws -> Bool {
+        var container = encoder.singleValueContainer()
+        if let value = value as? UInt {
+            try container.encode(value)
+        } else if let value = value as? UInt8 {
+            try container.encode(value)
+        } else if let value = value as? UInt16 {
+            try container.encode(value)
+        } else if let value = value as? UInt32 {
+            try container.encode(value)
+        } else if let value = value as? UInt64 {
+            try container.encode(value)
+        } else {
+            return false
+        }
+        return true
+    }
+
+    private func encodeFloatingPoint(to encoder: Encoder) throws -> Bool {
+        var container = encoder.singleValueContainer()
+        if let value = value as? Double {
+            try container.encode(value)
+        } else if let value = value as? Float {
+            try container.encode(value)
+        } else {
+            return false
+        }
+        return true
     }
 }
 

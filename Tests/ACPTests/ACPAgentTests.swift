@@ -59,7 +59,7 @@ final class ACPAgentTests: XCTestCase {
                 "sessionId": "session-123",
                 "cwd": "/tmp/project",
                 "additionalDirectories": ["/tmp/shared"],
-            ])
+            ] as [String: any Sendable])
         )
         let requestData = try JSONEncoder().encode(request)
         await transport.pushMessage(requestData)
@@ -194,7 +194,9 @@ final class ACPAgentTests: XCTestCase {
         await transport.finish()
         _ = await startTask.result
     }
+}
 
+extension ACPAgentTests {
     func testDraftAgentRequestsRouteToDelegate() async throws {
         let transport = TestTransport()
         let agent = Agent(transport: transport)
@@ -215,7 +217,7 @@ final class ACPAgentTests: XCTestCase {
                 "sessionId": "session-123",
                 "cwd": "/tmp/fork",
                 "additionalDirectories": ["/tmp/shared"],
-            ])
+            ] as [String: any Sendable])
         )
         await transport.pushMessage(try JSONEncoder().encode(forkRequest))
 
@@ -249,9 +251,9 @@ final class ACPAgentTests: XCTestCase {
                 "sessionId": "nes-1",
                 "uri": "file:///tmp/main.swift",
                 "version": 1,
-                "position": ["line": 0, "character": 0],
+                "position": ["line": 0, "character": 0] as [String: any Sendable],
                 "triggerKind": "manual",
-            ] as [String: Any])
+            ] as [String: any Sendable])
         )
         await transport.pushMessage(try JSONEncoder().encode(nesRequest))
 
@@ -317,12 +319,12 @@ final class ACPAgentTests: XCTestCase {
                 "sessionId": "nes-1",
                 "uri": "file:///tmp/main.swift",
                 "version": 2,
-                "position": ["line": 1, "character": 2],
+                "position": ["line": 1, "character": 2] as [String: any Sendable],
                 "visibleRange": [
-                    "start": ["line": 0, "character": 0],
-                    "end": ["line": 20, "character": 0],
-                ],
-            ] as [String: Any])
+                    "start": ["line": 0, "character": 0] as [String: any Sendable],
+                    "end": ["line": 20, "character": 0] as [String: any Sendable],
+                ] as [String: any Sendable],
+            ] as [String: any Sendable])
         )
         await transport.pushMessage(try JSONEncoder().encode(document))
 
@@ -389,7 +391,10 @@ final class ACPAgentTests: XCTestCase {
 
         await transport.pushMessage(try JSONEncoder().encode(JSONRPCResponse(
             id: elicitationRequest.id,
-            result: AnyCodable(["action": "accept", "content": ["value": "ok"]]),
+            result: AnyCodable([
+                "action": "accept",
+                "content": ["value": "ok"] as [String: any Sendable],
+            ] as [String: any Sendable]),
             error: nil
         )))
 
@@ -426,7 +431,7 @@ final class ACPAgentTests: XCTestCase {
                 "requestId": 12,
                 "elicitationId": "elicit-1",
                 "url": "https://example.com",
-            ] as [String: Any])
+            ] as [String: any Sendable])
         )
         let elicitationResult = try await router.routeRequest(elicitation)
         let elicitationData = try JSONEncoder().encode(elicitationResult)
@@ -454,19 +459,20 @@ final class ACPAgentTests: XCTestCase {
 }
 
 private actor TestTransport: Transport {
-    private let messageContinuation: AsyncStream<Data>.Continuation
-    nonisolated let messages: AsyncStream<Data>
+    private let messageContinuation: AsyncThrowingStream<Data, any Error>.Continuation
+    nonisolated let messages: AsyncThrowingStream<Data, any Error>
 
     private var sentMessages: [Data] = []
     private var sentContinuation: CheckedContinuation<Data, Error>?
     private var connected = true
 
     init() {
-        var continuation: AsyncStream<Data>.Continuation!
-        self.messages = AsyncStream { streamContinuation in
-            continuation = streamContinuation
-        }
-        self.messageContinuation = continuation
+        (messages, messageContinuation) = AsyncThrowingStream.makeStream()
+    }
+
+    func connect() async throws {
+        await Task.yield()
+        connected = true
     }
 
     func send(_ data: Data) async throws {

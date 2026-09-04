@@ -2,26 +2,25 @@
 //  Logger+ACP.swift
 //  ACP
 //
-//  Logging utility for ACP
+//  Logging utility for ACP.
 //
 
-import Foundation
-import os.log
+import os
 
 extension Logger {
-    /// Default subsystem for ACP logging
-    private static var acpSubsystem = "com.acp"
+    private static let acpSubsystem = OSAllocatedUnfairLock(initialState: "com.acp")
 
-    /// Configure the logging subsystem (call once at initialization)
+    /// Configures the logging subsystem used by subsequently created ACP loggers.
     public static func configureACPLogging(subsystem: String) {
-        acpSubsystem = subsystem
+        acpSubsystem.withLock { $0 = subsystem }
     }
 
-    /// Create a logger for a specific category
+    /// Creates a logger for a specific category.
     public static func forCategory(_ category: String) -> Logger {
-        Logger(subsystem: acpSubsystem, category: category)
+        let subsystem = acpSubsystem.withLock { $0 }
+        return Logger(subsystem: subsystem, category: category)
     }
 
-    /// Convenience logger for ACP
+    /// Convenience logger for ACP.
     public static let acp = Logger.forCategory("ACP")
 }

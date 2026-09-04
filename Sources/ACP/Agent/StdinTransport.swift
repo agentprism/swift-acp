@@ -5,9 +5,9 @@
 //  Transport for agents that read from stdin and write to stdout
 //
 
+import ACPModel
 import Foundation
 import os.log
-import ACPModel
 
 /// Transport for agents running as subprocesses.
 /// Reads JSON-RPC messages from stdin and writes responses to stdout.
@@ -18,12 +18,12 @@ public actor StdinTransport: Transport {
     private var isRunning = false
     private let logger: Logger
 
-    private var messageContinuation: AsyncStream<Data>.Continuation?
-    private let messageStream: AsyncStream<Data>
+    private var messageContinuation: AsyncThrowingStream<Data, any Error>.Continuation?
+    private let messageStream: AsyncThrowingStream<Data, any Error>
 
     // MARK: - Transport Protocol
 
-    public nonisolated var messages: AsyncStream<Data> {
+    nonisolated public var messages: AsyncThrowingStream<Data, any Error> {
         messageStream
     }
 
@@ -36,14 +36,14 @@ public actor StdinTransport: Transport {
     public init() {
         self.logger = Logger.forCategory("StdinTransport")
 
-        var continuation: AsyncStream<Data>.Continuation!
-        self.messageStream = AsyncStream { cont in
-            continuation = cont
-        }
-        self.messageContinuation = continuation
+        (messageStream, messageContinuation) = AsyncThrowingStream.makeStream()
     }
 
     // MARK: - Public Methods
+
+    public func connect() async throws {
+        await start()
+    }
 
     /// Start reading from stdin
     public func start() async {
@@ -70,7 +70,7 @@ public actor StdinTransport: Transport {
 
     public func send(_ data: Data) async throws {
         var output = data
-        output.append(0x0A) // newline
+        output.append(0x0A)  // newline
 
         FileHandle.standardOutput.write(output)
     }

@@ -5,19 +5,28 @@
 //  Main delegate protocol for ACP client
 //
 
-import Foundation
 import ACPModel
+import Foundation
+
+/// Handles permission requests initiated by an ACP agent.
+public protocol ClientPermissionDelegate: AnyObject, Sendable {
+    func handlePermissionRequest(request: RequestPermissionRequest) async throws -> RequestPermissionResponse
+}
 
 /// Protocol for handling incoming ACP requests from the agent
-public protocol ClientDelegate: AnyObject, Sendable {
+public protocol ClientDelegate: ClientPermissionDelegate {
     /// Handle file read request
-    func handleFileReadRequest(_ path: String, sessionId: String, line: Int?, limit: Int?) async throws -> ReadTextFileResponse
+    func handleFileReadRequest(_ path: String, sessionId: String, line: Int?, limit: Int?) async throws
+        -> ReadTextFileResponse
 
     /// Handle file write request
-    func handleFileWriteRequest(_ path: String, content: String, sessionId: String) async throws -> WriteTextFileResponse
+    func handleFileWriteRequest(_ path: String, content: String, sessionId: String) async throws
+        -> WriteTextFileResponse
 
     /// Handle terminal create request
-    func handleTerminalCreate(command: String, sessionId: String, args: [String]?, cwd: String?, env: [EnvVariable]?, outputByteLimit: Int?) async throws -> CreateTerminalResponse
+    func handleTerminalCreate(
+        command: String, sessionId: String, args: [String]?, cwd: String?, env: [EnvVariable]?, outputByteLimit: Int?
+    ) async throws -> CreateTerminalResponse
 
     /// Handle terminal output request
     func handleTerminalOutput(terminalId: TerminalId, sessionId: String) async throws -> TerminalOutputResponse
@@ -53,28 +62,28 @@ public protocol ClientDelegate: AnyObject, Sendable {
     func handleCompleteElicitation(_ notification: CompleteElicitationNotification) async throws
 }
 
-public extension ClientDelegate {
-    func handleMcpConnect(_ request: ConnectMcpRequest) async throws -> ConnectMcpResponse {
+extension ClientDelegate {
+    public func handleMcpConnect(_: ConnectMcpRequest) throws -> ConnectMcpResponse {
         throw ClientError.invalidResponse
     }
 
-    func handleMcpMessage(_ request: MessageMcpRequest) async throws -> MessageMcpResponse {
+    public func handleMcpMessage(_: MessageMcpRequest) throws -> MessageMcpResponse {
         throw ClientError.invalidResponse
     }
 
-    func handleMcpDisconnect(_ request: DisconnectMcpRequest) async throws -> DisconnectMcpResponse {
+    public func handleMcpDisconnect(_: DisconnectMcpRequest) throws -> DisconnectMcpResponse {
         throw ClientError.invalidResponse
     }
 
-    func handleMcpNotification(_ notification: MessageMcpNotification) async throws {
+    public func handleMcpNotification(_: MessageMcpNotification) {
         // Default: no-op
     }
 
-    func handleCreateElicitation(_ request: CreateElicitationRequest) async throws -> CreateElicitationResponse {
+    public func handleCreateElicitation(_: CreateElicitationRequest) throws -> CreateElicitationResponse {
         throw ClientError.invalidResponse
     }
 
-    func handleCompleteElicitation(_ notification: CompleteElicitationNotification) async throws {
+    public func handleCompleteElicitation(_: CompleteElicitationNotification) {
         // Default: no-op
     }
 }

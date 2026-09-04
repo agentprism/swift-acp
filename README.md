@@ -6,11 +6,11 @@ Swift SDK for the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/
 
 - Core ACP protocol implementation over JSON-RPC/stdio
 - Client and Agent (server) runtime support
-- Multi-platform: macOS 12+, iOS 15+, tvOS 15+, watchOS 8+
+- Multi-platform: macOS 13+, iOS 15+, tvOS 15+, watchOS 8+
 - Pluggable transport layer (stdio, WebSocket)
 - Actor-based concurrency for thread safety
 - Async/await APIs with Swift Concurrency
-- Streaming session updates via AsyncStream
+- Streaming session updates via `AsyncThrowingStream`
 - Stable `session/list` support and session metadata updates
 - Boolean session config options and usage update decoding
 - Built-in file system and terminal delegates
@@ -22,7 +22,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/agentprism/swift-acp", from: "1.0.0")
+    .package(url: "https://github.com/agentprism/swift-acp", branch: "main")
 ]
 ```
 
@@ -124,9 +124,9 @@ print("Auth required: \(response.authMethods != nil)")
 ### 4. Authenticate (if required)
 
 ```swift
-if let authMethods = response.authMethods {
+if let authMethod = response.authMethods?.first {
     let authResponse = try await client.authenticate(
-        authMethodId: authMethods.first!.id,
+        authMethodId: authMethod.id,
         credentials: ["token": "your-api-key"]
     )
 }
@@ -172,34 +172,38 @@ default:
 
 ```swift
 Task {
-    for await notification in client.notifications {
-        guard notification.method == "session/update",
-              let params = notification.params,
-              let data = try? JSONEncoder().encode(params),
-              let update = try? JSONDecoder().decode(SessionUpdateNotification.self, from: data) else {
-            continue
-        }
-
-        switch update.update {
-        case .agentMessageChunk(let content):
-            if case .text(let text) = content {
-                print("Agent: \(text.text)")
+    do {
+        for try await notification in client.notifications {
+            guard notification.method == "session/update",
+                  let params = notification.params,
+                  let data = try? JSONEncoder().encode(params),
+                  let update = try? JSONDecoder().decode(SessionUpdateNotification.self, from: data) else {
+                continue
             }
 
-        case .toolCall(let toolCall):
-            print("Tool: \(toolCall.title ?? "Unknown") [\(toolCall.status?.rawValue ?? "unknown")]")
+            switch update.update {
+            case .agentMessageChunk(let content):
+                if case .text(let text) = content {
+                    print("Agent: \(text.text)")
+                }
 
-        case .plan(let plan):
-            for entry in plan.entries {
-                print("- \(entry.content) [\(entry.status)]")
+            case .toolCall(let toolCall):
+                print("Tool: \(toolCall.title ?? "Unknown") [\(toolCall.status?.rawValue ?? "unknown")]")
+
+            case .plan(let plan):
+                for entry in plan.entries {
+                    print("- \(entry.content) [\(entry.status)]")
+                }
+
+            case .currentModeUpdate(let mode):
+                print("Mode changed to: \(mode)")
+
+            default:
+                break
             }
-
-        case .currentModeUpdate(let mode):
-            print("Mode changed to: \(mode)")
-
-        default:
-            break
         }
+    } catch {
+        print("Transport closed: \(error.localizedDescription)")
     }
 }
 ```
@@ -470,26 +474,62 @@ await transport.start()
 await agent.start()
 ```
 
+## Custom Methods and `_meta`
+
+The client can call arbitrary JSON-RPC methods without knowing their vendor-specific semantics. Method names and `_meta` values remain opaque to the SDK.
+
+```swift
+struct CustomRequest: Codable, Sendable {
+    let query: String
+    let _meta: [String: AnyCodable]?
+}
+
+struct CustomResponse: Codable, Sendable {
+    let value: String
+    let _meta: [String: AnyCodable]?
+}
+
+let response = try await client.sendRequest(
+    method: "_vendor.example/capabilities",
+    params: CustomRequest(
+        query: "available capabilities",
+        _meta: ["vendor.example/context": AnyCodable("discovery")]
+    ),
+    as: CustomResponse.self
+)
+
+print(response._meta?["vendor.example/context"]?.value as? String ?? "none")
+```
+
+Use the overloads without `params` for extension methods and notifications that do not take a payload. The raw `JSONRPCResponse` overload exposes `result` and `error.data` as `AnyCodable` when the response shape is not known statically.
+
 ## WebSocket Transport
 
-For network-based communication, use the `ACPHTTP` module:
+For network-based communication, create the same `Client` with a `WebSocketTransport`:
 
 ```swift
 import ACPHTTP
 
-// Connect to a WebSocket server
-let transport = WebSocketTransport(url: URL(string: "ws://localhost:8080")!)
-try await transport.connect()
+if let endpoint = URL(string: "ws://localhost:8080/acp") {
+    let client = Client(transport: WebSocketTransport(url: endpoint))
+    try await client.connect()
 
-// Send and receive messages
-try await transport.send(jsonData)
+    let response = try await client.initialize(
+        InitializeRequest(
+            protocolVersion: 1,
+            clientCapabilities: ClientCapabilities(
+                fs: FileSystemCapabilities(readTextFile: false, writeTextFile: false),
+                terminal: false
+            )
+        )
+    )
 
-for await message in transport.messages {
-    // Handle incoming messages
+    print(response.agentInfo?.name ?? "Unknown agent")
+    await client.terminate()
 }
-
-await transport.close()
 ```
+
+`WebSocketClient` is also available as a convenience wrapper. Its `connect(_:)` overload accepts a complete `InitializeRequest`, including `_meta`.
 
 ## Agent Registry
 
@@ -550,14 +590,26 @@ if let method = agent.distribution.preferred(for: .current) {
 
 ## Requirements
 
-- macOS 12.0+, iOS 15.0+, tvOS 15.0+, watchOS 8.0+
-- Swift 5.9+
+- macOS 13.0+, iOS 15.0+, tvOS 15.0+, watchOS 8.0+
+- Swift 6.3+
 
 > **Note:** Process spawning (stdio transport for launching agents) is only available on macOS. Other platforms can use WebSocket transport or implement custom transports.
 
 ## Protocol Reference
 
-This SDK implements the [Agent Client Protocol](https://agentclientprotocol.com/) specification.
+This SDK implements the [Agent Client Protocol](https://agentclientprotocol.com/) specification. The checked-in [`schema.json`](schema.json) is downloaded from the protocol's authoritative latest-release artifact:
+
+```text
+https://github.com/agentclientprotocol/agent-client-protocol/releases/latest/download/schema.json
+```
+
+Refresh it with:
+
+```bash
+curl --fail --location \
+  https://github.com/agentclientprotocol/agent-client-protocol/releases/latest/download/schema.json \
+  --output schema.json
+```
 
 See the `reference/` directory for:
 - `reference/agent-client-protocol/` - Protocol specification

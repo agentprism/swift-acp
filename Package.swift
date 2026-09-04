@@ -1,10 +1,10 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.3
 import PackageDescription
 
 let package = Package(
     name: "swift-acp",
     platforms: [
-        .macOS(.v12),
+        .macOS(.v13),
         .iOS(.v15),
         .tvOS(.v15),
         .watchOS(.v8),
@@ -19,7 +19,11 @@ let package = Package(
         .package(
             url: "https://github.com/SimplyDanny/SwiftLintPlugins",
             exact: "0.65.1"
-        )
+        ),
+        .package(
+            url: "https://github.com/swiftlang/swift-subprocess",
+            exact: "1.0.0"
+        ),
     ],
     targets: [
         // Core model types (platform-independent)
@@ -30,7 +34,14 @@ let package = Package(
         // Main ACP client/agent runtime
         .target(
             name: "ACP",
-            dependencies: ["ACPModel"],
+            dependencies: [
+                "ACPModel",
+                .product(
+                    name: "Subprocess",
+                    package: "swift-subprocess",
+                    condition: .when(platforms: [.macOS])
+                ),
+            ],
             path: "Sources/ACP"
         ),
         // HTTP/WebSocket transport (optional)
