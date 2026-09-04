@@ -11,6 +11,7 @@ let package = Package(
     ],
     products: [
         .library(name: "ACPModel", targets: ["ACPModel"]),
+        .library(name: "ACPCore", targets: ["ACPCore"]),
         .library(name: "ACP", targets: ["ACP"]),
         .library(name: "ACPHTTP", targets: ["ACPHTTP"]),
         .library(name: "ACPRegistry", targets: ["ACPRegistry"]),
@@ -31,10 +32,17 @@ let package = Package(
             name: "ACPModel",
             path: "Sources/ACPModel"
         ),
-        // Main ACP client/agent runtime
+        // Transport-independent ACP client/agent runtime
+        .target(
+            name: "ACPCore",
+            dependencies: ["ACPModel"],
+            path: "Sources/ACPCore"
+        ),
+        // macOS stdio transport and compatibility module
         .target(
             name: "ACP",
             dependencies: [
+                "ACPCore",
                 "ACPModel",
                 .product(
                     name: "Subprocess",
@@ -47,7 +55,7 @@ let package = Package(
         // HTTP/WebSocket transport (optional)
         .target(
             name: "ACPHTTP",
-            dependencies: ["ACP", "ACPModel"],
+            dependencies: ["ACPCore", "ACPModel"],
             path: "Sources/ACPHTTP"
         ),
         // Agent registry (macOS only)
@@ -58,7 +66,7 @@ let package = Package(
         // Tests
         .testTarget(
             name: "ACPTests",
-            dependencies: ["ACP", "ACPModel"]
+            dependencies: ["ACP", "ACPCore", "ACPModel"]
         ),
         .testTarget(
             name: "ACPModelTests",
@@ -66,7 +74,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ACPHTTPTests",
-            dependencies: ["ACPHTTP", "ACP", "ACPModel"]
+            dependencies: ["ACPHTTP", "ACPCore", "ACPModel"]
         ),
         .testTarget(
             name: "ACPRegistryTests",

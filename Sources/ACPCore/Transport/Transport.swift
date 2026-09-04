@@ -31,6 +31,11 @@ public protocol Transport: Sendable {
     var isConnected: Bool { get async }
 }
 
+/// A transport failure that provides the error surfaced by ``Client``.
+public protocol ClientTransportError: Error, Sendable {
+    var clientError: any Error { get }
+}
+
 /// Events emitted by transports for lifecycle management.
 public enum TransportEvent: Sendable {
     case connected

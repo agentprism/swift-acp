@@ -7,7 +7,7 @@
 
 import XCTest
 @testable import ACPHTTP
-@testable import ACP
+@testable import ACPCore
 @testable import ACPModel
 
 final class ACPHTTPTests: XCTestCase {

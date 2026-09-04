@@ -4,7 +4,7 @@ Swift SDK for the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/
 
 ## Features
 
-- Core ACP protocol implementation over JSON-RPC/stdio
+- Transport-independent ACP protocol implementation over JSON-RPC
 - Client and Agent (server) runtime support
 - Multi-platform: macOS 13+, iOS 15+, tvOS 15+, watchOS 8+
 - Pluggable transport layer (stdio, WebSocket)
@@ -32,8 +32,8 @@ Then add the dependency to your target:
 .target(
     name: "YourApp",
     dependencies: [
-        "ACP",           // Core client & agent runtime
-        "ACPHTTP",       // Optional: WebSocket transport
+        "ACP",           // Core runtime plus macOS stdio transport
+        "ACPHTTP",       // Optional: core runtime plus WebSocket transport
         "ACPRegistry"    // Optional: Agent discovery & installation
     ]
 )
@@ -44,9 +44,12 @@ Then add the dependency to your target:
 | Package | Description |
 |---------|-------------|
 | `ACPModel` | Platform-independent protocol types (shared by client and agent) |
-| `ACP` | Core client and agent runtime for ACP communication |
-| `ACPHTTP` | WebSocket transport for network-based communication |
+| `ACPCore` | Transport-independent client and agent runtime |
+| `ACP` | Compatibility module combining `ACPCore` with the macOS stdio transport |
+| `ACPHTTP` | `ACPCore` plus WebSocket transport, without a subprocess linkage |
 | `ACPRegistry` | Agent discovery and installation from the [ACP Registry](https://github.com/agentclientprotocol/registry) |
+
+Use `ACP` for local stdio agents. Network-only applications can depend on `ACPHTTP` (and optionally `ACPCore`) without linking `swift-subprocess`.
 
 ## Quick Start
 
@@ -505,7 +508,7 @@ Use the overloads without `params` for extension methods and notifications that 
 
 ## WebSocket Transport
 
-For network-based communication, create the same `Client` with a `WebSocketTransport`:
+For network-based communication, depend on `ACPHTTP` instead of `ACP` and create the same `Client` with a `WebSocketTransport`. `ACPHTTP` re-exports `ACPCore` and does not link the stdio implementation or `swift-subprocess`:
 
 ```swift
 import ACPHTTP
@@ -593,7 +596,7 @@ if let method = agent.distribution.preferred(for: .current) {
 - macOS 13.0+, iOS 15.0+, tvOS 15.0+, watchOS 8.0+
 - Swift 6.3+
 
-> **Note:** Process spawning (stdio transport for launching agents) is only available on macOS. Other platforms can use WebSocket transport or implement custom transports.
+> **Note:** Process spawning is available only through the macOS `ACP` target. `ACPCore` and `ACPHTTP` remain transport-independent and can be used without linking subprocess support.
 
 ## Protocol Reference
 

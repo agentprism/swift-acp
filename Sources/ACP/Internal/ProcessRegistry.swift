@@ -6,6 +6,7 @@
 //
 
 #if os(macOS)
+    import ACPCore
     import Darwin
     import Foundation
     import Subprocess

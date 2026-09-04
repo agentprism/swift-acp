@@ -5,7 +5,7 @@
 //  WebSocket transport for ACP JSON-RPC messages.
 //
 
-import ACP
+import ACPCore
 import ACPModel
 import Foundation
 import os

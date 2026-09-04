@@ -105,67 +105,27 @@ public actor Client {
         startMessageLoop(for: transport)
     }
 
-    #if os(macOS)
-        /// Launches an ACP agent using ``StdioTransport``.
-        public func launch(
-            agentPath: String,
-            arguments: [String] = [],
-            workingDirectory: String? = nil,
-            environment: [String: String]? = nil
-        ) async throws {
-            let executable: StdioExecutable = agentPath.contains("/") ? .path(agentPath) : .name(agentPath)
-            try await launch(
-                executable: executable,
-                arguments: arguments,
-                workingDirectory: workingDirectory,
-                environment: environment ?? [:]
-            )
+    /// Installs and opens a transport on a client created without one.
+    public func connect(transport newTransport: any Transport) async throws {
+        guard transport == nil else {
+            throw ClientError.transportError("A transport is already configured")
         }
 
-        /// Launches an ACP agent using an explicit path or `PATH` lookup.
-        public func launch(
-            executable: StdioExecutable,
-            arguments: [String] = [],
-            workingDirectory: String? = nil,
-            environment: [String: String] = [:]
-        ) async throws {
-            guard transport == nil else {
-                throw ClientError.transportError("A transport is already configured")
-            }
-
-            let stdioTransport = StdioTransport(
-                executable: executable,
-                arguments: arguments,
-                workingDirectory: workingDirectory,
-                environment: environment
-            )
-            transport = stdioTransport
-            do {
-                try await connect()
-            } catch {
-                transport = nil
-                throw error
-            }
+        transport = newTransport
+        do {
+            try await connect()
+        } catch {
+            transport = nil
+            throw error
         }
+    }
 
-        /// The subprocess identifier when this client owns a stdio transport.
-        public func processIdentifier() async -> Int32? {
-            guard let stdioTransport = transport as? StdioTransport else { return nil }
-            return await stdioTransport.processIdentifier()
-        }
-
-        /// The subprocess group identifier when this client owns a stdio transport.
-        public func processGroupIdentifier() async -> Int32? {
-            guard let stdioTransport = transport as? StdioTransport else { return nil }
-            return await stdioTransport.processGroupIdentifier()
-        }
-
-        /// Complete stderr lines from the owned stdio subprocess.
-        public func stderrLines() -> AsyncStream<String>? {
-            guard let stdioTransport = transport as? StdioTransport else { return nil }
-            return stdioTransport.stderrLines
-        }
-    #endif
+    /// Returns the configured transport when it has the requested concrete type.
+    public func configuredTransport<TransportValue: Transport>(
+        as _: TransportValue.Type
+    ) -> TransportValue? {
+        transport as? TransportValue
+    }
 
     public func setDelegate(_ delegate: (any ClientDelegate)?) async {
         self.delegate = delegate
@@ -469,18 +429,9 @@ extension Client {
     }
 
     private func mappedTransportError(_ error: (any Error)?) -> any Error {
-        #if os(macOS)
-            if let transportError = error as? StdioTransportError {
-                switch transportError {
-                case .processExited(let code):
-                    return code == 0 ? ClientError.connectionClosed : ClientError.processFailed(code)
-                case .processSignaled(let signal):
-                    return ClientError.processFailed(-signal)
-                default:
-                    return transportError
-                }
-            }
-        #endif
+        if let transportError = error as? any ClientTransportError {
+            return transportError.clientError
+        }
         return error ?? ClientError.connectionClosed
     }
 
